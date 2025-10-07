@@ -1,0 +1,6 @@
+# pyproject.toml
+[build-system]
+requires = [
+  "torch",
+  ]
+
