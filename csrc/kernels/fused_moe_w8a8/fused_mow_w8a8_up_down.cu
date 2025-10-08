@@ -1,4 +1,4 @@
-
+#include <cuda/std/limits>
 #include <cstdint>
 #include <cuda.h>
 #include <cuda_fp8.h>
@@ -21,7 +21,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 // not gonna type all that
 using fp8 = __nv_fp8_e4m3;
-
 constexpr __device__ __forceinline__ int32_t const_ceil(float num)
 {
     return (static_cast<float>(static_cast<int32_t>(num)) == num)
@@ -775,12 +774,12 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 p^=1;
                 smem_stage = 0;
             }
-            wait(bar + STAGES + smem_stage, p);
             const int off = load_stage * block_shape[0];
             int i = (threadIdx.x)*TO;
             int row = load_stage*BN2 + i/BK2;
             int col = blockIdx.x*BK2 + i%BK2;
             int swizzled = i^((i&(S_MASK<<S_BITS))>>S_BITS);
+            wait(bar + STAGES + smem_stage, p);
             for(int r = 0; r < W_IT; r += 1)
             {
                 uint32_t sm = __cvta_generic_to_shared(s.w + smem_stage*WS + swizzled);
@@ -871,8 +870,74 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         }
     }
     __syncthreads();
-    __nv_bfloat16* out_sm = reinterpret_cast<__nv_bfloat16*>(sh);
+    smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
+    float4* block_max = reinterpret_cast<float4*>(s_d.x);
+    for(int tn = 0; tn<TN; tn++)
+    {
+        for(int tm = 0; tm<TM; tm++)
+        {
+            f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
+            f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
+        }
+    }
+    // Holds max firts, scale later
+    float token_max[TN][TM][2];
+    for(int tn = 0; tn<TN; tn++)
+    {
+        for(int tm = 0; tm<TM; tm++)
+        {
+            for (int t = 0; t < 2; t++)
+            {
+                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 16), token_max[tn][tm][t]);
+                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 8), token_max[tn][tm][t]);
+                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 4), token_max[tn][tm][t]);
+                int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
+                reinterpret_cast<float*>(block_max + off)[warp_id] = token_max[tn][tm][t];
+            }
+        }
+    }
+    __syncthreads();
+    // It's kida sad that it's not constexpr compatible
+    // constexpr float fp8_max = static_cast<float>(::cuda::std::numeric_limits<fp8>::max());
+    // constexpr float fp8_min = static_cast<float>(::cuda::std::numeric_limits<fp8>::min());
 
+    constexpr float fp8_max = 448.0;
+    constexpr float fp8_min = -448.0;
+
+    for(int tn = 0; tn<TN; tn++)
+    {
+        for(int tm = 0; tm<TM; tm++)
+        {
+            for (int t = 0; t < 2; t++)
+            {
+                int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
+                float4 bmax = block_max[off];
+                token_max[tn][tm][t] = fmaxf(bmax.x, token_max[tn][tm][t]);
+                token_max[tn][tm][t] = fmaxf(bmax.y, token_max[tn][tm][t]);
+                token_max[tn][tm][t] = fmaxf(bmax.z, token_max[tn][tm][t]);
+                token_max[tn][tm][t] = fmaxf(bmax.w, token_max[tn][tm][t]);
+                float scale = token_max[tn][tm][t] / fp8_max;
+                token_max[tn][tm][t] = scale;
+                float q = f_acc[tn][tm][t] / scale;
+                f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
+            }
+        }
+    }
+
+    for(int tn = 0; tn<TN; tn++)
+    {
+        for(int tm = 0; tm<TM; tm++)
+        {
+            for (int t = 0; t < 2; t++)
+            {
+                int x_row = tm*8 + (lane_id%4)*2 + t;
+                int x_col = tn*32 + threadIdx.x/4;
+                s_d.x[x_row*BK2 + x_col] = fp8(f_acc[tn][tm][t]);
+            }
+        }
+    }
+
+    __nv_bfloat16* out_sm = reinterpret_cast<__nv_bfloat16*>(sh);
     constexpr int ROW_PAD = WN*BN/2+(16/sizeof(__nv_bfloat16));
     if (!is_producer)
     {
