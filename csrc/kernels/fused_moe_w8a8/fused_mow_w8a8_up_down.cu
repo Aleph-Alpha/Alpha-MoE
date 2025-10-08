@@ -992,8 +992,8 @@ void launch_fused_moe_kernel_up_down(
     dim3 dimBlock(32*WN + PRODUCER_THREADS, 1, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*WN)), std::ceil((float)sorted_num/(block_m)), 1);
 
-    size_t sMemSize = std::max(sizeof(smem_up<STAGES, WN, BM, BK, BN>),
-            sizeof(smem_up<STAGES, WN, BM, BK, BN>));
+    static_assert(sizeof(smem_up<STAGES, WN, BM, BK, BN>) > sizeof(smem_down<STAGES, WN, BM, BK, BN>));
+    size_t sMemSize = sizeof(smem_up<STAGES, WN, BM, BK, BN>);
     gpuErrchk(cudaFuncSetAttribute(
                 fused_moe_w8a8_wgmma_up_down_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, sMemSize));
