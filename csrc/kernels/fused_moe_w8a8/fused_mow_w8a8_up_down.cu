@@ -674,8 +674,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     const int K2 = N/2;
     const int N2 = K;
 
-    const int BK2 = WN*BN/2;
-    const int BN2 = BK*2;
+    constexpr int BK2 = WN*BN/2;
+    constexpr int BN2 = BK*2;
 
     //SMEM sizes
     constexpr int WS = WN*BK*BN;
@@ -868,165 +868,143 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 }
             }
         }
-    }
-    __syncthreads();
-    smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
-    float4* block_max = reinterpret_cast<float4*>(s_d.x);
-    for(int tn = 0; tn<TN; tn++)
-    {
-        for(int tm = 0; tm<TM; tm++)
-        {
-            f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
-            f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
-        }
-    }
-    // Holds max firts, scale later
-    float token_max[TN][TM][2];
-    for(int tn = 0; tn<TN; tn++)
-    {
-        for(int tm = 0; tm<TM; tm++)
-        {
-            for (int t = 0; t < 2; t++)
-            {
-                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 16), token_max[tn][tm][t]);
-                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 8), token_max[tn][tm][t]);
-                token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 4), token_max[tn][tm][t]);
-                int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
-                reinterpret_cast<float*>(block_max + off)[warp_id] = token_max[tn][tm][t];
-            }
-        }
-    }
-    __syncthreads();
-    // It's kida sad that it's not constexpr compatible
-    // constexpr float fp8_max = static_cast<float>(::cuda::std::numeric_limits<fp8>::max());
-    // constexpr float fp8_min = static_cast<float>(::cuda::std::numeric_limits<fp8>::min());
-
-    constexpr float fp8_max = 448.0;
-    constexpr float fp8_min = -448.0;
-
-    for(int tn = 0; tn<TN; tn++)
-    {
-        for(int tm = 0; tm<TM; tm++)
-        {
-            for (int t = 0; t < 2; t++)
-            {
-                int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
-                float4 bmax = block_max[off];
-                token_max[tn][tm][t] = fmaxf(bmax.x, token_max[tn][tm][t]);
-                token_max[tn][tm][t] = fmaxf(bmax.y, token_max[tn][tm][t]);
-                token_max[tn][tm][t] = fmaxf(bmax.z, token_max[tn][tm][t]);
-                token_max[tn][tm][t] = fmaxf(bmax.w, token_max[tn][tm][t]);
-                float scale = token_max[tn][tm][t] / fp8_max;
-                token_max[tn][tm][t] = scale;
-                float q = f_acc[tn][tm][t] / scale;
-                f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
-            }
-        }
-    }
-
-    for(int tn = 0; tn<TN; tn++)
-    {
-        for(int tm = 0; tm<TM; tm++)
-        {
-            for (int t = 0; t < 2; t++)
-            {
-                int x_row = tm*8 + (lane_id%4)*2 + t;
-                int x_col = tn*32 + threadIdx.x/4;
-                s_d.x[x_row*BK2 + x_col] = fp8(f_acc[tn][tm][t]);
-            }
-        }
-    }
-
-    __nv_bfloat16* out_sm = reinterpret_cast<__nv_bfloat16*>(sh);
-    constexpr int ROW_PAD = WN*BN/2+(16/sizeof(__nv_bfloat16));
-    if (!is_producer)
-    {
+        __syncthreads();
+        smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
+        float4* block_max = reinterpret_cast<float4*>(s_d.x);
         for(int tn = 0; tn<TN; tn++)
         {
-            for(int tm = 0; tm+3<TM; tm+=4)
+            for(int tm = 0; tm<TM; tm++)
             {
-                uint32_t tile[4];
-                __nv_bfloat162 temp0 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]),
-                        swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3])
-                        );
-                __nv_bfloat162 temp1 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm+1][0], f_acc[tn][tm+1][2]),
-                        swiglu_mul(f_acc[tn][tm+1][1], f_acc[tn][tm+1][3])
-                        );
-                __nv_bfloat162 temp2 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm+2][0], f_acc[tn][tm+2][2]),
-                        swiglu_mul(f_acc[tn][tm+2][1], f_acc[tn][tm+2][3])
-                        );
-                __nv_bfloat162 temp3 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm+3][0], f_acc[tn][tm+3][2]),
-                        swiglu_mul(f_acc[tn][tm+3][1], f_acc[tn][tm+3][3])
-                        );
-                memcpy(&tile[0], &temp0, sizeof(uint32_t));
-                memcpy(&tile[1], &temp1, sizeof(uint32_t));
-                memcpy(&tile[2], &temp2, sizeof(uint32_t));
-                memcpy(&tile[3], &temp3, sizeof(uint32_t));
-                int out_row = tm * 8 + lane_id;
-                int out_col = warp_id*8 + tn*WN*8;
-                uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
-                st_matrix_x4_trans(tile, out_sm_u);
-            }
-            if constexpr(TM%4 == 2 || TM % 4 == 3)
-            {
-                int tm = TM-(TM%4);
-                uint32_t tile[2];
-                __nv_bfloat162 temp0 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]),
-                        swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3])
-                        );
-                __nv_bfloat162 temp1 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm+1][0], f_acc[tn][tm+1][2]),
-                        swiglu_mul(f_acc[tn][tm+1][1], f_acc[tn][tm+1][3])
-                        );
-                memcpy(&tile[0], &temp0, sizeof(uint32_t));
-                memcpy(&tile[1], &temp1, sizeof(uint32_t));
-                int out_row = tm * 8 + lane_id%16;
-                int out_col = warp_id*8 + tn*WN*8;
-                uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
-                st_matrix_x2_trans(tile, out_sm_u);
-            }
-            if constexpr (TM%4 == 1 || TM%4 == 3)
-            {
-                int tm = TM-1;
-                uint32_t tile[1];
-                __nv_bfloat162 temp0 = __nv_bfloat162(
-                        swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]),
-                        swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3])
-                        );
-                memcpy(&tile[0], &temp0, sizeof(uint32_t));
-
-                int out_row = tm * 8 + lane_id%16;
-                int out_col = warp_id*8 + tn*WN*8;
-                uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
-                st_matrix_x1_trans(tile, out_sm_u);
-
+                f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
+                f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
             }
         }
-    }
-    cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
-    __syncthreads();
-    if(!is_producer && warp_id == 0 && lane_id < 4)
-    {
+        // Holds max firts, scale later
+        float token_max[TN][TM][2];
+        for(int tn = 0; tn<TN; tn++)
+        {
+            for(int tm = 0; tm<TM; tm++)
+            {
+                for (int t = 0; t < 2; t++)
+                {
+                    token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 16), token_max[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 8), token_max[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 4), token_max[tn][tm][t]);
+                    int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
+                    reinterpret_cast<float*>(block_max + off)[warp_id] = token_max[tn][tm][t];
+                }
+            }
+        }
+        __syncthreads();
+        // It's kida sad that it's not constexpr compatible
+        // constexpr float fp8_max = static_cast<float>(::cuda::std::numeric_limits<fp8>::max());
+        // constexpr float fp8_min = static_cast<float>(::cuda::std::numeric_limits<fp8>::min());
+
+        constexpr float fp8_max = 448.0;
+        constexpr float fp8_min = -448.0;
+
+        for(int tn = 0; tn<TN; tn++)
+        {
+            for(int tm = 0; tm<TM; tm++)
+            {
+                for (int t = 0; t < 2; t++)
+                {
+                    int off = tn*BM + tm*8 + (lane_id%4)*2 + t;
+                    float4 bmax = block_max[off];
+                    token_max[tn][tm][t] = fmaxf(bmax.x, token_max[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(bmax.y, token_max[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(bmax.z, token_max[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(bmax.w, token_max[tn][tm][t]);
+                    float scale = token_max[tn][tm][t] / fp8_max;
+                    token_max[tn][tm][t] = scale;
+                    float q = f_acc[tn][tm][t] / scale;
+                    f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
+                }
+            }
+        }
+
+        for(int tn = 0; tn<TN; tn++)
+        {
+            for(int tm = 0; tm<TM; tm++)
+            {
+                for (int t = 0; t < 2; t++)
+                {
+                    int x_row = tm*8 + (lane_id%4)*2 + t;
+                    int x_col = tn*32 + threadIdx.x/4;
+                    s_d.x[x_row*BK2 + x_col] = fp8(f_acc[tn][tm][t]);
+                }
+            }
+        }
+
+        float scale_x[TPT];
         for(int t = 0; t < TPT; t++)
         {
             if (token_src[t] < M)
             {
-                int row = (t/2)*8 + t%2 + lane_id*2;
-                cuda::ptx::cp_async_bulk(
-                        cuda::ptx::space_global,
-                        cuda::ptx::space_shared,
-                        out + token_dest[t]*N/2 + warpN*BN/2,
-                        out_sm + row*ROW_PAD,
-                        BN*WN*sizeof(__nv_bfloat16)/2);
+                scale_x[t] = topk_weights[token_src[t]];
             }
         }
-        cuda::ptx::cp_async_bulk_commit_group();
-        cuda::ptx::cp_async_bulk_wait_group_read(cuda::ptx::n32_t<0>());
+
+        for (int compute_stage = 0; compute_stage < n_stages_down; compute_stage += 1)
+        {
+            wait(bar + (compute_stage%STAGES), p);
+            if ((compute_stage%STAGES) == STAGES-1)
+                p^=1;
+
+            const int scale_rows_w = N2/block_shape[1];
+            const int scale_cols_w = K2/block_shape[0];
+            float scale_w;
+            int s_r = w_row/block_shape[1];
+            scale_w = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage];
+
+
+            constexpr int TN2 = BN2/64;
+            float tile_acc[TN2][TN][TM][4];
+            memset(tile_acc, 0, sizeof(f_acc));
+            warpgroup_arrive();
+            fp8* sx = s_d.x;
+            for(int tn2 = 0; tn2<TN2; tn2++)
+            {
+                for(int tn = 0; tn<TN; tn++)
+                {
+                    fp8* sw = s.w + (compute_stage%STAGES)*WS + tn2*64*BK2;
+                    wgmma<1,1,1, BM>(tile_acc[tn2][tn], sw + (tn*32), sx + (tn*32));
+                }
+            }
+            warpgroup_commit_batch();
+            warpgroup_wait();
+            arrive(bar + STAGES + (compute_stage%STAGES));
+            // ATOMIC ADD OUTPUT HERE
+            for(int tn2 = 0; tn2<TN2; tn2++)
+            {
+                for(int tn = 0; tn<TN; tn++)
+                {
+                    for(int tm = 0; tm<TM; tm++)
+                    {
+                    }
+                }
+            }
+
+            // for(int tm = 0; tm<TM; tm++)
+            // {
+            //     float x_sc;
+            //     x_sc = scale_x[tm*2];
+            //     for(int tn = 0; tn<TN; tn++)
+            //     {
+            //         f_acc[tn][tm][0] += scale_w[0] * x_sc * tile_acc[tn][tm][0];
+            //         f_acc[tn][tm][2] += scale_w[1] * x_sc * tile_acc[tn][tm][2];
+            //     }
+            //
+            //     x_sc = scale_x[tm*2 + 1];
+            //     for(int tn = 0; tn<TN; tn++)
+            //     {
+            //         f_acc[tn][tm][1] += scale_w[0] * x_sc * tile_acc[tn][tm][1];
+            //         f_acc[tn][tm][3] += scale_w[1] * x_sc * tile_acc[tn][tm][3];
+            //     }
+            // }
+        }
+
+
     }
 }
 
