@@ -882,7 +882,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 memcpy(&tile[2], &temp2, sizeof(uint32_t));
                 memcpy(&tile[3], &temp3, sizeof(uint32_t));
                 int out_row = tm * 8 + lane_id;
-                int out_col = warp_id*8 + tn*WN*8;
+                int out_col = (warp_id/4)*TN*32 + (warp_id%4)*8 + tn*32;
                 uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
                 st_matrix_x4_trans(tile, out_sm_u);
             }
@@ -901,7 +901,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 memcpy(&tile[0], &temp0, sizeof(uint32_t));
                 memcpy(&tile[1], &temp1, sizeof(uint32_t));
                 int out_row = tm * 8 + lane_id%16;
-                int out_col = warp_id*8 + tn*WN*8;
+                int out_col = (warp_id/4)*TN*32 + (warp_id%4)*8 + tn*32;
                 uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
                 st_matrix_x2_trans(tile, out_sm_u);
             }
@@ -916,7 +916,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 memcpy(&tile[0], &temp0, sizeof(uint32_t));
 
                 int out_row = tm * 8 + lane_id%16;
-                int out_col = warp_id*8 + tn*WN*8;
+                int out_col = (warp_id/4)*TN*32 + (warp_id%4)*8 + tn*32;
                 uint32_t out_sm_u = __cvta_generic_to_shared(out_sm + out_row*ROW_PAD + out_col);
                 st_matrix_x1_trans(tile, out_sm_u);
 
