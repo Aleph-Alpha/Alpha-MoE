@@ -166,7 +166,7 @@ torch::Tensor fused_moe_launcher_up_down(
         )
 {
     auto options = torch::TensorOptions().dtype(at::ScalarType::BFloat16).device(w.device());
-    torch::Tensor out = torch::empty({x.size(0), x.size(1)}, options);
+    torch::Tensor out = torch::zeros({x.size(0), x.size(1)}, options);
     switch (kernel_variant)
     {
         case 0:

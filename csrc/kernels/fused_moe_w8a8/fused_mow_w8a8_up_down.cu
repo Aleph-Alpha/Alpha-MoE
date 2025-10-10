@@ -988,12 +988,19 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 for(int tm = 0; tm<TM; tm++)
                 {
-                    float acc = 0;
-                    for(int tn = 0; tn<TN; tn++)
+                    for (int t = 0; t<4; t++)
                     {
-                        acc += tile_acc[TN2-1][tn][tm][0];
+                        float acc = 0;
+                        int s = t%2;
+                        for(int tn = 0; tn<TN; tn++)
+                        {
+                            acc += token_max[tn][tm][s]*tile_acc[tn2][tn][tm][t];
+                        }
+                        int out_row = token_src[tm*2 + t%2];
+                        int out_col = tn2*64 + (warp_id%4)*16 + (t/2)*8 + (lane_id/4);
+                        if(out_row < M)
+                            atomicAdd(out + out_row*K + out_col, 1);
                     }
-                    out[0] = acc;
                 }
             }
             smem_stage++;
