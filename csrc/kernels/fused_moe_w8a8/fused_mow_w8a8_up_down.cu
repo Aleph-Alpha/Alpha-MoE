@@ -64,11 +64,9 @@ __device__ __forceinline__ void warpgroup_wait() {
     asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory");
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma8(float d[1][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma8(float d[1][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n8k32.f32.e4m3.e4m3 "
@@ -82,11 +80,9 @@ __device__ void wgmma8(float d[1][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma16(float d[2][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma16(float d[2][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n16k32.f32.e4m3.e4m3 "
@@ -101,11 +97,9 @@ __device__ void wgmma16(float d[2][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma24(float d[3][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma24(float d[3][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n24k32.f32.e4m3.e4m3 "
@@ -121,11 +115,9 @@ __device__ void wgmma24(float d[3][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma32(float d[4][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma32(float d[4][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n32k32.f32.e4m3.e4m3 "
@@ -142,11 +134,9 @@ __device__ void wgmma32(float d[4][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma40(float d[5][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma40(float d[5][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n40k32.f32.e4m3.e4m3 "
@@ -164,11 +154,9 @@ __device__ void wgmma40(float d[5][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma48(float d[6][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma48(float d[6][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n48k32.f32.e4m3.e4m3 "
@@ -187,11 +175,9 @@ __device__ void wgmma48(float d[6][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma56(float d[7][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma56(float d[7][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n56k32.f32.e4m3.e4m3 "
@@ -211,11 +197,9 @@ __device__ void wgmma56(float d[7][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma64(float d[8][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma64(float d[8][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n64k32.f32.e4m3.e4m3 "
@@ -236,11 +220,9 @@ __device__ void wgmma64(float d[8][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma72(float d[9][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma72(float d[9][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n72k32.f32.e4m3.e4m3 "
@@ -262,11 +244,9 @@ __device__ void wgmma72(float d[9][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma80(float d[10][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma80(float d[10][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n80k32.f32.e4m3.e4m3 "
@@ -289,11 +269,9 @@ __device__ void wgmma80(float d[10][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma88(float d[11][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma88(float d[11][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n88k32.f32.e4m3.e4m3 "
@@ -317,11 +295,9 @@ __device__ void wgmma88(float d[11][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma96(float d[12][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma96(float d[12][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n96k32.f32.e4m3.e4m3 "
@@ -346,11 +322,9 @@ __device__ void wgmma96(float d[12][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma104(float d[13][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma104(float d[13][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n104k32.f32.e4m3.e4m3 "
@@ -376,11 +350,9 @@ __device__ void wgmma104(float d[13][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma112(float d[14][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma112(float d[14][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n112k32.f32.e4m3.e4m3 "
@@ -407,11 +379,9 @@ __device__ void wgmma112(float d[14][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma120(float d[15][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma120(float d[15][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n120k32.f32.e4m3.e4m3 "
@@ -439,11 +409,9 @@ __device__ void wgmma120(float d[15][4], fp8* sA, fp8* sB)
             "n"(int32_t(ScaleB)));
 }
 
-template<int ScaleD, int ScaleA, int ScaleB, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
-__device__ void wgmma128(float d[16][4], fp8* sA, fp8* sB)
+template<int ScaleD, int ScaleA, int ScaleB>
+__device__ void wgmma128(float d[16][4], uint64_t desc_a, uint64_t desc_b)
 {
-    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
-    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n128k32.f32.e4m3.e4m3 "
@@ -475,38 +443,41 @@ __device__ void wgmma128(float d[16][4], fp8* sA, fp8* sB)
 template<int ScaleD, int ScaleA, int ScaleB, int BM, int SDO_A = 64, int LDO_A = 1, int SDO_B = 64, int LDO_B = 1>
 __device__ void wgmma(float d[BM/8][4], fp8* sA, fp8* sB)
 {
+    uint64_t desc_a = make_smem_desc<SDO_A, LDO_A>(&sA[0]);
+    uint64_t desc_b = make_smem_desc<SDO_B, LDO_B>(&sB[0]);
+
     if constexpr (BM == 8)
-        wgmma8<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma8<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 16)
-        wgmma16<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma16<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 24)
-        wgmma24<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma24<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 32)
-        wgmma32<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma32<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 40)
-        wgmma40<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma40<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 48)
-        wgmma48<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma48<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 56)
-        wgmma56<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma56<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 64)
-        wgmma64<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma64<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 72)
-        wgmma72<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma72<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 80)
-        wgmma80<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma80<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 88)
-        wgmma88<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma88<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 96)
-        wgmma96<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma96<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 104)
-        wgmma104<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma104<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 112)
-        wgmma112<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma112<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 120)
-        wgmma120<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma120<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
     else if constexpr (BM == 128)
-        wgmma128<ScaleD, ScaleA, ScaleB, SDO_A, LDO_A, SDO_B, LDO_B>(d, sA, sB);
+        wgmma128<ScaleD, ScaleA, ScaleB>(d, desc_a, desc_b);
 }
 
 #define CP_ASYNC_CG(dst, src, Bytes) \
