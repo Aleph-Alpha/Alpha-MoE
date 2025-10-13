@@ -997,34 +997,18 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                             acc += token_max[tn][tm][s]*tile_acc[tn2][tn][tm][t];
                         }
                         int out_row = token_src[tm*2 + t%2];
-                        int out_col = tn2*64 + (warp_id%4)*16 + (t/2)*8 + (lane_id/4);
+                        int out_col = compute_stage*TN2*64 + tn2*64 + (warp_id%4)*16 + (t/2)*8 + (lane_id/4);
                         if(out_row < M)
-                            atomicAdd(out + out_row*K + out_col, 1);
+                        {
+
+                            // out[out_row*K + out_col] = acc;
+                            atomicAdd(out + out_row*K + out_col, acc);
+                        }
                     }
                 }
             }
             smem_stage++;
-
-            // for(int tm = 0; tm<TM; tm++)
-            // {
-            //     float x_sc;
-            //     x_sc = scale_x[tm*2];
-            //     for(int tn = 0; tn<TN; tn++)
-            //     {
-            //         f_acc[tn][tm][0] += scale_w[0] * x_sc * tile_acc[tn][tm][0];
-            //         f_acc[tn][tm][2] += scale_w[1] * x_sc * tile_acc[tn][tm][2];
-            //     }
-            //
-            //     x_sc = scale_x[tm*2 + 1];
-            //     for(int tn = 0; tn<TN; tn++)
-            //     {
-            //         f_acc[tn][tm][1] += scale_w[0] * x_sc * tile_acc[tn][tm][1];
-            //         f_acc[tn][tm][3] += scale_w[1] * x_sc * tile_acc[tn][tm][3];
-            //     }
-            // }
         }
-
-
     }
 }
 
