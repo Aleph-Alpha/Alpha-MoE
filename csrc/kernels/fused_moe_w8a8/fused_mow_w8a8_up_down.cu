@@ -751,6 +751,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         }
         __syncthreads();
         __syncthreads();
+        __syncthreads();
 
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
 
@@ -868,6 +869,16 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         {
             for(int tm = 0; tm<TM; tm++)
             {
+                int x_row = tm*8 + (lane_id%4)*2;
+                int x_col = tn*32 + warp_id*8 + lane_id/4;
+                // if(token_dest[0] == 17 && blockIdx.x == 0 && blockIdx.y == 64)
+                // {
+                //     printf("swiglu %f, %f, %f\n", f_acc[tn][tm][0], f_acc[tn][tm][2], swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]));
+                // }
+                // if(token_dest[1] == 17 && blockIdx.x == 0 && blockIdx.y == 64)
+                // {
+                //     printf("tid %d col %d swiglu %f, %f, %f\n", threadIdx.x, x_col, f_acc[tn][tm][1], f_acc[tn][tm][3], swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]));
+                // }
                 f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
                 f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
             }
@@ -880,7 +891,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 for (int t = 0; t < 2; t++)
                 {
-                    token_max[tn][tm][t] = fabsf(f_acc[tn][tm][t]);
+                    token_max[tn][tm][t] = fmaxf(fabsf(f_acc[tn][tm][t]), 1e-10);
                     token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 16), token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 8), token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tn][tm][t], 4), token_max[tn][tm][t]);
@@ -909,6 +920,17 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     token_max[tn][tm][t] = fmaxf(bmax.y, token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(bmax.z, token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(bmax.w, token_max[tn][tm][t]);
+                }
+            }
+        }
+        __syncthreads();
+        for(int tn = 0; tn<TN; tn++)
+        {
+            for(int tm = 0; tm<TM; tm++)
+            {
+                for (int t = 0; t < 2; t++)
+                {
+                    float m = token_max[tn][tm][t];
                     float scale = token_max[tn][tm][t] / fp8_max;
                     token_max[tn][tm][t] = scale;
                     float val = f_acc[tn][tm][t];
@@ -919,6 +941,11 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     int i = x_row*BK2 + x_col;
                     int swizzled = swizzle<S_BITS_DOWN>(i);
                     s_d.x[swizzled] = fp8(f_acc[tn][tm][t]);
+                    // if(token_dest[t] == 17 && blockIdx.x == 0 && blockIdx.y == 64)
+                    // {
+                    //     printf("tid %d, saving %f to %d, %d, acc %d, %f, %f, max %f, \n",
+                    //             threadIdx.x, f_acc[tn][tm][t], x_row, x_col, token_dest[tm*2 + t], val, q, m);
+                    // }
                 }
             }
         }
@@ -932,6 +959,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
         }
 
+        constexpr int TN2 = BN2/64;
         for (int compute_stage = 0; compute_stage < n_stages_down; compute_stage += 1)
         {
             if (smem_stage == STAGES)
@@ -943,12 +971,12 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
             const int scale_rows_w = N2/block_shape[1];
             const int scale_cols_w = K2/block_shape[0];
-            float scale_w;
-            int s_r = w_row/block_shape[1];
-            scale_w = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage];
+            float scale_w[TN2/2];
+            int s_r = (w_row/2)/block_shape[1];
+            for (int i = 0; i<(TN2/2); i++)
+                scale_w[i] = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage*(TN2/2) + i];
 
 
-            constexpr int TN2 = BN2/64;
             float tile_acc[TN2][TN][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             fp8* sx = s_d.x;
@@ -1055,34 +1083,34 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                                 int swizzled_x = swizzle<S_BITS_DOWN>(i_x);
                                 a_m += float(sw[swizzled]) * float(sx[swizzled_x]);
                                 // if(pt && t == 0 && tn2 == 0)
-                                // if(out_row == 71 && out_col == 0 && blockIdx.x == 0)
-                                // {
-                                //     printf("adding r %d, c%d, i %d/%d, i_x %d/%d, w %f, x %f, scaled w %f, x%f, manual %f\n",
-                                //             r, c, i, swizzled, i_x, swizzled_x,
-                                //             float(sw[swizzled]), float(sx[swizzled_x]),
-                                //             scale_w * float(sw[swizzled]), scale_x[tm*2 + t%2] * float(sx[swizzled_x]), float(exp_w2[1])
-                                //           );
-                                // }
+                                if(out_row == 8 && out_col == 2372 && blockIdx.x == 3)
+                                {
+                                    printf("adding r %d(%d, %d, %d), tn2 %d, c%d, i %d/%d, i_x %d/%d, w %f(%f), x %f, scaled w %f, x%f, manual %f\n",
+                                            s_r, s_r*scale_cols_w + compute_stage*(TN2/2) + tn2/2, scale_cols_w, compute_stage, tn2, c, i, swizzled, i_x, swizzled_x,
+                                            float(sw[swizzled]), scale_w[tn2/2], float(sx[swizzled_x]),
+                                            scale_w[tn2/2] * float(sw[swizzled]), scale_x[tm*2 + t%2] * float(sx[swizzled_x]), float(exp_w2[1])
+                                          );
+                                }
 
                             }
                             a_m *= token_max[0][tm][s];
 
                             // out[out_row*K + out_col] = acc;
-                            atomicAdd(out + out_row*K + out_col, acc*scale_w*scale_x[tm*2 + t%2]);
+                            atomicAdd(out + out_row*K + out_col, acc*scale_w[tn2/2]*scale_x[tm*2 + t%2]);
                             // atomicAdd(out + out_row*K + out_col, a_m*scale_w*scale_x[tm*2 + t%2]);
                             // atomicAdd(out + out_row*K + out_col, 1);
-                            // if(out_row == 71 && out_col == 0)
-                            // {
-                            //     printf("adding acc %f, true %f, tile_acc %f, w_s %f, x_s %f, token_max  %f, r %d, c %d, t %d, r %d\n",
-                            //             acc*scale_w*scale_x[tm*2 + t%2],
-                            //             a_m*scale_w*scale_x[tm*2 + t%2],
-                            //             tile_acc[tn2][0][tm][t],
-                            //             scale_w,
-                            //             scale_x[tm*2 + t%2],
-                            //             token_max[0][tm][0],
-                            //             out_row, out_col, t, r
-                            //           );
-                            // }
+                            if(out_row == 8 && out_col == 2372)
+                            {
+                                printf("adding acc %f, true %f, tile_acc %f, w_s %f, x_s %f, token_max  %f, r %d, c %d, t %d, r %d\n",
+                                        acc*scale_w[tn2/2]*scale_x[tm*2 + t%2],
+                                        a_m*scale_w[tn2/2]*scale_x[tm*2 + t%2],
+                                        tile_acc[tn2][0][tm][t],
+                                        scale_w[tn2/2],
+                                        scale_x[tm*2 + t%2],
+                                        token_max[0][tm][0],
+                                        out_row, out_col, blockIdx.x, r
+                                      );
+                            }
                         }
                     }
                 }
@@ -1115,7 +1143,7 @@ void launch_fused_moe_kernel_up_down(
     constexpr int BK = 128;
     constexpr int BN = 16;
     constexpr int WN = 4;
-    constexpr int STAGES = 3;
+    constexpr int STAGES = 1;
     constexpr int PRODUCER_THREADS = 128;
     dim3 dimBlock(32*WN + PRODUCER_THREADS, 1, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*WN)), std::ceil((float)sorted_num/(block_m)), 1);
