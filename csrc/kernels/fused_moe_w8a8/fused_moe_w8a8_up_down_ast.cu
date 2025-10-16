@@ -870,7 +870,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         }
         consumer_sync();
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
-        float4* block_max = reinterpret_cast<float4*>(s_d.x);
+        float4* block_max = reinterpret_cast<float4*>(s_d.out);
         for(int tn = 0; tn<TN; tn++)
         {
             for(int tm = 0; tm<TM; tm++)
@@ -918,16 +918,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     token_max[tn][tm][t] = fmaxf(bmax.y, token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(bmax.z, token_max[tn][tm][t]);
                     token_max[tn][tm][t] = fmaxf(bmax.w, token_max[tn][tm][t]);
-                }
-            }
-        }
-        consumer_sync();
-        for(int tn = 0; tn<TN; tn++)
-        {
-            for(int tm = 0; tm<TM; tm++)
-            {
-                for (int t = 0; t < 2; t++)
-                {
                     float m = token_max[tn][tm][t];
                     float scale = token_max[tn][tm][t] / fp8_max;
                     token_max[tn][tm][t] = scale;
