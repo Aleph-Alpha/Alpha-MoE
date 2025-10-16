@@ -676,6 +676,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     smem_up<STAGES, WN, BM, BK, BN>& s = *reinterpret_cast<smem_up<STAGES, WN, BM, BK, BN>*>(sh);
 
     __shared__ __align__(8) uint64_t bar[2*STAGES];
+    int cp = 0;
+    __shared__ __align__(8) uint64_t consumer_bar;
     if (threadIdx.x == 0)
     {
         for (int i = 0; i < STAGES; i++)
@@ -683,8 +685,15 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             init_barrier(&bar[i], PRODUCER_THREADS, 0);
             init_barrier(&bar[i + STAGES], CONSUMER_THREADS, 0);
         }
+        init_barrier(&consumer_bar, CONSUMER_THREADS, 0);
     }
     __syncthreads();
+    auto consumer_sync = [&]()
+    {
+        arrive(&consumer_bar);
+        wait(&consumer_bar, cp);
+        cp^=1;
+    };
 
     int n_stages_up = K/block_shape[0];
     int n_stages_down = N2/BN2;
@@ -749,9 +758,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             cp_async_mbarrier_arrive(bar + smem_stage);
             smem_stage++;
         }
-        __syncthreads();
-        __syncthreads();
-        __syncthreads();
 
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
 
@@ -777,7 +783,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 row += PRODUCER_THREADS*TO/BK2;
             }
             cp_async_mbarrier_arrive(bar + smem_stage);
-            __syncthreads();
             smem_stage++;
         }
     }
@@ -862,7 +867,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
             smem_stage++;
         }
-        __syncthreads();
+        consumer_sync();
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
         float4* block_max = reinterpret_cast<float4*>(s_d.x);
         for(int tn = 0; tn<TN; tn++)
@@ -892,7 +897,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 }
             }
         }
-        __syncthreads();
+        consumer_sync();
         // It's kida sad that it's not constexpr compatible
         // constexpr float fp8_max = static_cast<float>(::cuda::std::numeric_limits<fp8>::max());
         // constexpr float fp8_min = static_cast<float>(::cuda::std::numeric_limits<fp8>::min());
@@ -915,7 +920,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 }
             }
         }
-        __syncthreads();
+        consumer_sync();
         for(int tn = 0; tn<TN; tn++)
         {
             for(int tm = 0; tm<TM; tm++)
@@ -967,7 +972,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             float tile_acc[TN2][TN][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             fp8* sx = s_d.x;
-            __syncthreads();
             warpgroup_arrive();
             for(int tn2 = 0; tn2<TN2; tn2++)
             {
@@ -1029,7 +1033,7 @@ void launch_fused_moe_kernel_up_down(
     constexpr int BK = 128;
     constexpr int BN = 16;
     constexpr int WN = 4;
-    constexpr int STAGES = 1;
+    constexpr int STAGES = 3;
     constexpr int PRODUCER_THREADS = 128;
     dim3 dimBlock(32*WN + PRODUCER_THREADS, 1, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*WN)), std::ceil((float)sorted_num/(block_m)), 1);
