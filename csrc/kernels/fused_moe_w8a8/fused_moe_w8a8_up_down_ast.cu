@@ -988,30 +988,28 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
             asm volatile("cp.async.bulk.wait_group 0;");
 
-            for(int tn2 = 0; tn2<TN2; tn2++)
+            for(int tn2 = 0; tn2<TN2; tn2+=2)
             {
                 for(int tm = 0; tm<TM; tm++)
                 {
-                    __nv_bfloat16 tile[4];
+                    __nv_bfloat16 tile[8];
                     for (int t = 0; t<8; t++)
                     {
                         int out_row = token_dest[tm*2 + t%2];
                         float acc = 0;
                         if(out_row < M * top_k)
                         {
-                            // int out_col = compute_stage*TN2*64 + tn2*64 + (warp_id%4)*16 + (t/2)*8 + (lane_id/4);
                             int s = t%2;
                             for(int tn = 0; tn<TN; tn++)
                             {
-                                acc += token_max[tn][tm][s]*tile_acc[tn2][tn][tm][t];
-                                // acc += token_max[tn][tm][s]*tile_acc[tn2 + t/4][tn][tm][t%4];
+                                acc += token_max[tn][tm][s]*tile_acc[tn2 + t/4][tn][tm][t%4];
                             }
                         }
                         tile[t] = acc*scale_w[tn2/2]*scale_x[tm*2 + t%2];
                     }
                     int out_row = tm * 8 + lane_id%8;
-                    int out_col = warp_id*16 + (lane_id/8)*8 + tn2*64;
-                    st_matrix_x2_trans(reinterpret_cast<uint32_t*>(tile),
+                    int out_col = warp_id*16 + ((lane_id/8)*8)%16 + tn2*64 + (lane_id/16)*64;
+                    st_matrix_x4_trans(reinterpret_cast<uint32_t*>(tile),
                             __cvta_generic_to_shared(s_d.out + out_row*BN2 + out_col));
                 }
             }
