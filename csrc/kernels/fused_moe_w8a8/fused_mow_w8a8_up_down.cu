@@ -842,10 +842,10 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 fp8* sw = s.w + smem_stage*WS + (warp_id/4)*(BN*4)*BK + tn*64*BK;
                 fp8* sx = s.x + smem_stage*XS;
-                wgmma<1,1,1, BM, 64, 1, 64, 1, 1, 1>(tile_acc[tn], sw, sx);
-                wgmma<1,1,1, BM, 64, 1, 64, 1, 1, 1>(tile_acc[tn], sw+1*32, sx+1*32);
-                wgmma<1,1,1, BM, 64, 1, 64, 1, 1, 1>(tile_acc[tn], sw+2*32, sx+2*32);
-                wgmma<1,1,1, BM, 64, 1, 64, 1, 1, 1>(tile_acc[tn], sw+3*32, sx+3*32);
+                wgmma<1,1,1, BM, 64, 1, 64, 1, S_MODE_UP, S_MODE_UP>(tile_acc[tn], sw, sx);
+                wgmma<1,1,1, BM, 64, 1, 64, 1, S_MODE_UP, S_MODE_UP>(tile_acc[tn], sw+1*32, sx+1*32);
+                wgmma<1,1,1, BM, 64, 1, 64, 1, S_MODE_UP, S_MODE_UP>(tile_acc[tn], sw+2*32, sx+2*32);
+                wgmma<1,1,1, BM, 64, 1, 64, 1, S_MODE_UP, S_MODE_UP>(tile_acc[tn], sw+3*32, sx+3*32);
             }
             warpgroup_commit_batch();
             warpgroup_wait();
