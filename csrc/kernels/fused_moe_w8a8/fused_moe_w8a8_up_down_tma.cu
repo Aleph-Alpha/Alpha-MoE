@@ -1036,12 +1036,25 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     if (token_dest[t] < M*top_k)
                     {
                         int row = (t/2)*8 + t%2 + lane_id*2;
-                        cuda::ptx::cp_async_bulk(
-                                cuda::ptx::space_global,
-                                cuda::ptx::space_shared,
-                                out + token_dest[t]*N2 + compute_stage*BN2 + warpN*BN2,
-                                s_d.out + row*BN2,
-                                BN2*sizeof(__nv_bfloat16));
+                        if constexpr (BK2 == 128)
+                        {
+                            cuda::ptx::cp_async_bulk(
+                                    cuda::ptx::space_global,
+                                    cuda::ptx::space_shared,
+                                    out + token_dest[t]*N2 + compute_stage*BN2,
+                                    s_d.out + row*BN2,
+                                    BN2*sizeof(__nv_bfloat16));
+                        }
+                        else
+                        {
+                            cuda::ptx::cp_reduce_async_bulk(
+                                    cuda::ptx::space_global,
+                                    cuda::ptx::space_shared,
+                                    cuda::ptx::op_add,
+                                    out + token_dest[t]*N2 + compute_stage*BN2,
+                                    s_d.out + row*BN2,
+                                    BN2*sizeof(__nv_bfloat16));
+                        }
                     }
                 }
                 cuda::ptx::cp_async_bulk_commit_group();
@@ -1123,7 +1136,9 @@ void launch_fused_moe_kernel_up_down_tma(
                 CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_UINT8,
                 rank, w2, size, stride, box_size, elem_stride,
                 CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
-                CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B,
+                WN*BN == 256 ? CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B :
+                WN*BN == 128 ? CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_64B :
+                               CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_32B,
                 CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
                 CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
                 );
