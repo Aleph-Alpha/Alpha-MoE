@@ -692,7 +692,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     __syncthreads();
     auto consumer_sync = [&]()
     {
-        asm volatile("bar.sync 10, 128;\n");
+        asm volatile("bar.sync 0, 128;\n");
 
     };
 
