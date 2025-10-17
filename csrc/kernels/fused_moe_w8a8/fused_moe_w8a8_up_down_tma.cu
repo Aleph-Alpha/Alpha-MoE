@@ -649,7 +649,7 @@ struct smem_down
 {
     alignas(1024) fp8 w[STAGES*WN*BK*BN];
     alignas(1024) fp8 x[BM*WN*BN/2];
-    alignas(1024) __nv_bfloat16 out[BM*BK*2];
+    alignas(1024) __nv_bfloat16 out[BM*(BK*2 + 8)];
 };
 
 
@@ -1004,6 +1004,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             arrive(bar + STAGES + smem_stage);
 
             asm volatile("cp.async.bulk.wait_group 0;");
+            constexpr int PAD = BN2+8;
 
             for(int tn2 = 0; tn2<TN2; tn2+=2)
             {
@@ -1024,7 +1025,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     int out_row = tm * 8 + lane_id%8;
                     int out_col = warp_id*16 + ((lane_id/8)*8)%16 + tn2*64 + (lane_id/16)*64;
                     st_matrix_x4_trans(reinterpret_cast<uint32_t*>(tile),
-                            __cvta_generic_to_shared(s_d.out + out_row*BN2 + out_col));
+                            __cvta_generic_to_shared(s_d.out + out_row*PAD + out_col));
                 }
             }
             cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
@@ -1042,7 +1043,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                                     cuda::ptx::space_global,
                                     cuda::ptx::space_shared,
                                     out + token_dest[t]*N2 + compute_stage*BN2,
-                                    s_d.out + row*BN2,
+                                    s_d.out + row*PAD,
                                     BN2*sizeof(__nv_bfloat16));
                         }
                         else
@@ -1052,7 +1053,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                                     cuda::ptx::space_shared,
                                     cuda::ptx::op_add,
                                     out + token_dest[t]*N2 + compute_stage*BN2,
-                                    s_d.out + row*BN2,
+                                    s_d.out + row*PAD,
                                     BN2*sizeof(__nv_bfloat16));
                         }
                     }
