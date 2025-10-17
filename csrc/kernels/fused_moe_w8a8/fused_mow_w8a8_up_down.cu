@@ -51,7 +51,7 @@ __device__ __forceinline__ uint64_t make_smem_descriptor(fp8* ptr) {
     desc |= ((uint64_t)LDO) << 16;
     desc |= ((uint64_t)SDO) << 32;
     // I don't think we need this anymore
-    desc |= (((uint64_t)addr >> 0x7) & 0x7) << 49;
+    // desc |= (((uint64_t)addr >> 0x7) & 0x7) << 49;
     desc |= S_MODE << 62;
     return desc;
 }
