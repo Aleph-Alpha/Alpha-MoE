@@ -122,6 +122,24 @@ void fused_moe_w8a8_wgmma_up_down_tma(const fp8* x,
         int block_m
 );
 
+void fused_moe_w8a8_wgmma_up_down_acc(const fp8* x,
+        const float* x_scale,
+        fp8* w, const float* w_scale,
+        fp8* w2, const float* w2_scale,
+        __nv_bfloat16* out,
+        const int* sorted_token_ids,
+        const int* expert_ids,
+        const int* num_tokens_post_padded,
+        const __nv_bfloat16* topk_weights,
+        const int top_k,
+        int M,
+        int K,
+        int N,
+        int sorted_num,
+        int block_m,
+        float scaling_factor
+);
+
 torch::Tensor fused_moe_launcher(
         torch::Tensor& x,
         torch::Tensor& x_scale,
@@ -197,7 +215,8 @@ torch::Tensor fused_moe_launcher_up_down(
         torch::Tensor& topk_weights,
         int top_k,
         int kernel_variant,
-        int BM
+        int BM,
+        float scaling_factor
         )
 {
     auto options = torch::TensorOptions().dtype(at::ScalarType::BFloat16).device(w.device());
@@ -260,6 +279,28 @@ torch::Tensor fused_moe_launcher_up_down(
             w.size(1),
             sorted_token_ids.size(0),
             BM);
+            break;
+        case 3:
+            out = torch::zeros({x.size(0), x.size(1)}, options);
+            fused_moe_w8a8_wgmma_up_down_acc(static_cast<__nv_fp8_e4m3*>(x.data_ptr()),
+            static_cast<float*>(x_scale.data_ptr()),
+            static_cast<__nv_fp8_e4m3*>(w.data_ptr()),
+            static_cast<float*>(w_scale.data_ptr()),
+            static_cast<__nv_fp8_e4m3*>(w2.data_ptr()),
+            static_cast<float*>(w2_scale.data_ptr()),
+            static_cast<__nv_bfloat16*>(out.data_ptr()),
+            static_cast<int*>(sorted_token_ids.data_ptr()),
+            static_cast<int*>(expert_ids.data_ptr()),
+            static_cast<int*>(num_tokens_post_padded.data_ptr()),
+            static_cast<__nv_bfloat16*>(topk_weights.data_ptr()),
+            top_k,
+            x.size(0),
+            x.size(1),
+            w.size(1),
+            sorted_token_ids.size(0),
+            BM,
+            scaling_factor
+            );
             break;
     }
     return out;
