@@ -673,6 +673,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         )
 {
     constexpr int CONSUMER_THREADS = WN*32;
+    constexpr int WARPGROUPS = WN / 4;
     const int32_t warpM = blockIdx.y;
     const int exp_idx = expert_ids[warpM];
     if(warpM * BM >= num_tokens_post_padded[0])
@@ -727,8 +728,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     __syncthreads();
     auto consumer_sync = [&]()
     {
-        asm volatile("bar.sync 0, 128;\n");
-
+        asm volatile("bar.sync 0, %0;\n" :: "n"(CONSUMER_THREADS));
     };
 
     int n_stages_up = K/block_shape[0];
@@ -919,7 +919,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 token_max[tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tm][t], 8), token_max[tm][t]);
                 token_max[tm][t] = fmaxf(__shfl_xor_sync(0xFFFFFFFF, token_max[tm][t], 4), token_max[tm][t]);
                 int off = tm*8 + (lane_id%4)*2 + t;
-                reinterpret_cast<float*>(block_max + off)[warp_id] = token_max[tm][t];
+                reinterpret_cast<float*>(block_max + off * WARPGROUPS)[warp_id] = token_max[tm][t];
             }
         }
         consumer_sync();
@@ -935,11 +935,15 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             for (int t = 0; t < 2; t++)
             {
                 int off = tm*8 + (lane_id%4)*2 + t;
-                float4 bmax = block_max[off];
-                token_max[tm][t] = fmaxf(bmax.x, token_max[tm][t]);
-                token_max[tm][t] = fmaxf(bmax.y, token_max[tm][t]);
-                token_max[tm][t] = fmaxf(bmax.z, token_max[tm][t]);
-                token_max[tm][t] = fmaxf(bmax.w, token_max[tm][t]);
+                // Reduce max across all warp groups using float4 loads
+                for(int wg = 0; wg < WARPGROUPS; wg++)
+                {
+                    float4 bmax = block_max[off * WARPGROUPS + wg];
+                    token_max[tm][t] = fmaxf(bmax.x, token_max[tm][t]);
+                    token_max[tm][t] = fmaxf(bmax.y, token_max[tm][t]);
+                    token_max[tm][t] = fmaxf(bmax.z, token_max[tm][t]);
+                    token_max[tm][t] = fmaxf(bmax.w, token_max[tm][t]);
+                }
                 float m = token_max[tm][t];
                 float scale = token_max[tm][t] / fp8_max;
                 token_max[tm][t] = scale;
@@ -949,7 +953,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     float q = val / scale;
                     f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
                     int x_row = tm*8 + (lane_id%4)*2 + t;
-                    int x_col = tn*32 + warp_id*8 + lane_id/4;
+                    int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
                     int i = x_row*BK2 + x_col;
                     int swizzled = swizzle<S_BITS_DOWN>(i);
                     s_d.x[swizzled] = fp8(f_acc[tn][tm][t]);
@@ -966,7 +970,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
         }
 
-        constexpr int TN2 = BN2/64;
+        constexpr int TN2 = BN2/(64*WARPGROUPS);
         for (int compute_stage = 0; compute_stage < n_stages_down; compute_stage += 1)
         {
             if (smem_stage == STAGES)
@@ -978,36 +982,42 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
             const int scale_rows_w = N2/block_shape[1];
             const int scale_cols_w = K2/block_shape[0];
+            const int scales_per_stage = BN2 / block_shape[0];
+            const int scales_per_wg = (TN2 * 64) / block_shape[0];
             float scale_w[TN2/2];
             int s_r = (w_row/2)/block_shape[1];
             for (int i = 0; i<(TN2/2); i++)
-                scale_w[i] = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage*(TN2/2) + i];
+                scale_w[i] = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage*scales_per_stage + (warp_id/4)*scales_per_wg + i];
 
 
             float tile_acc[TN2][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             fp8* sx = s_d.x;
             warpgroup_arrive();
-            for(int tn2 = 0; tn2<TN2; tn2++)
+
+            for(int tn2 = 0; tn2 < TN2; tn2++)
             {
-                fp8* sw = s_d.w + smem_stage*WS + tn2*64*BK2;
-                for(int tn = 0; tn<TN; tn++)
+                fp8* sw = s_d.w + smem_stage*WS + ((warp_id/4)*TN2 + tn2)*64*BK2;
+                for(int tk = 0; tk < BK2/32; tk++)
                 {
-                    wgmma<1,1,1, BM, BK2/2, 1, BK2/2, 1, S_MODE_DOWN, S_MODE_DOWN>(tile_acc[tn2], sw + (tn*32), sx + (tn*32));
+                    wgmma<1,1,1, BM, BK2/2, 1, BK2/2, 1, S_MODE_DOWN, S_MODE_DOWN>(tile_acc[tn2], sw + (tk*32), sx + (tk*32));
                 }
             }
             warpgroup_commit_batch();
             warpgroup_wait();
             arrive(bar + STAGES + smem_stage);
 
-            asm volatile("cp.async.bulk.wait_group 0;");
 
             constexpr int PAD = BN2+8;
+            asm volatile("cp.async.bulk.wait_group 0;");
+            cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
+            consumer_sync();
             for(int tn2 = 0; tn2<TN2; tn2+=2)
             {
                 for(int tm = 0; tm<TM; tm++)
                 {
                     __nv_bfloat16 tile[8];
+                    int out_col = (warp_id/4)*TN2*64 + (warp_id%4)*16 + (lane_id&8) + tn2*64 + (lane_id/16)*64;
                     for (int t = 0; t<8; t++)
                     {
                         int out_row = token_src[tm*2 + t%2];
@@ -1018,7 +1028,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                         }
                     }
                     int out_row = tm * 8 + lane_id%8;
-                    int out_col = warp_id*16 + (lane_id&8) + tn2*64 + (lane_id/16)*64;
                     st_matrix_x4_trans(reinterpret_cast<uint32_t*>(tile),
                             __cvta_generic_to_shared(s_d.out + out_row*PAD + out_col));
                 }
@@ -1069,8 +1078,8 @@ void launch_fused_moe_kernel_up_down_acc(
         )
 {
     constexpr int BK = 128;
-    constexpr int BN = 64;
-    constexpr int WN = 4;
+    constexpr int BN = 32;
+    constexpr int WN = 8;
     constexpr int STAGES = 2;
     constexpr int PRODUCER_THREADS = 128;
     dim3 dimBlock(32*WN + PRODUCER_THREADS, 1, 1);
