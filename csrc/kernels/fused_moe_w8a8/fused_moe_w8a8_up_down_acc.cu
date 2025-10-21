@@ -6,6 +6,8 @@
 #include <cuda/ptx>
 #include <cassert>
 #include <cudaTypedefs.h>
+#include <vector>
+#include <algorithm>
 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -652,7 +654,7 @@ struct smem_down
 };
 
 
-template <int BM, int BK, int BN, int WN, int STAGES, int PRODUCER_THREADS>
+template <int BM, int BK, int BN, int WN, int STAGES, int PRODUCER_THREADS, bool DEBUG>
 __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma_up_down_acc_kernel(
         const fp8* __restrict__ x,
         const float* __restrict__ x_scale,
@@ -669,7 +671,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         int M,
         int K,
         int N,
-        float scaling_factor
+        float scaling_factor,
+        int* DBG
         )
 {
     constexpr int CONSUMER_THREADS = WN*32;
@@ -678,6 +681,12 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     const int exp_idx = expert_ids[warpM];
     if(warpM * BM >= num_tokens_post_padded[0])
         return;
+
+    // Calculate unique debug buffer offset for each consumer thread
+    const int consumer_thread_idx = threadIdx.x - PRODUCER_THREADS;  // Local index within block
+    const int block_linear_idx = blockIdx.y * gridDim.x + blockIdx.x;
+    const int global_consumer_idx = block_linear_idx * CONSUMER_THREADS + consumer_thread_idx;
+    int* LDBG = DBG + global_consumer_idx * 3;
 
     const int32_t warpN = (blockIdx.x*CONSUMER_THREADS + (threadIdx.x - PRODUCER_THREADS))/32;
 
@@ -847,6 +856,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     // CONSUMER
     else
     {
+        clock_t start = clock();
         for(int t = 0; t < TPT; t+=2)
         {
             int2 tdst = *reinterpret_cast<const int2*>(&sorted_token_ids[warpM*BM + t*4 + (lane_id%4)*2]);
@@ -928,7 +938,20 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
             smem_stage++;
         }
+        if constexpr (DEBUG)
+            LDBG[0] = clock()-start;
         consumer_sync();
+        start = clock();
+
+        float token_scale[TM][2];
+        for(int t = 0; t < TPT; t++)
+        {
+            if (token_dest[t] < M * top_k)
+            {
+                const float topk_w = topk_weights[token_dest[t]];
+                token_scale[t/2][t%2] = topk_w * scaling_factor;
+            }
+        }
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
         float4* block_max = reinterpret_cast<float4*>(s_d.out);
         nv_bfloat162 token_max[TM];
@@ -938,13 +961,16 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
                 f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
-                nv_bfloat162 abs = __habs2(nv_bfloat162(f_acc[tn][tm][0], f_acc[tn][tm][1]));
-                token_max[tm] = __hmax2(abs, token_max[tm]);
             }
         }
         // Holds max firts, scale later
         for(int tm = 0; tm<TM; tm++)
         {
+            for (int tn = 0; tn<TN; tn++)
+            {
+                nv_bfloat162 abs = __habs2(nv_bfloat162(f_acc[tn][tm][0], f_acc[tn][tm][1]));
+                token_max[tm] = __hmax2(abs, token_max[tm]);
+            }
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 16), token_max[tm]);
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 8), token_max[tm]);
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 4), token_max[tm]);
@@ -961,7 +987,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
         constexpr float fp8_max = 448.0;
         constexpr float fp8_min = -448.0;
-        float token_scale[TM][2];
 
         for(int tm = 0; tm<TM; tm++)
         {
@@ -977,14 +1002,17 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.z), token_max[tm]);
                     token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.w), token_max[tm]);
                 }
-                token_scale[tm][0] = float(token_max[tm].x) / fp8_max;
-                token_scale[tm][1] = float(token_max[tm].y) / fp8_max;
+                float token_sc[2];
+                token_sc[0] = float(token_max[tm].x) / fp8_max;
+                token_sc[1] = float(token_max[tm].y) / fp8_max;
+                token_scale[tm][0] *= token_sc[0];
+                token_scale[tm][1] *= token_sc[1];
                 for (int t = 0; t < 2; t++)
                 {
                     for(int tn = 0; tn<TN; tn++)
                     {
                         float val = f_acc[tn][tm][t];
-                        float q = val / token_scale[tm][t];
+                        float q = val / token_sc[t];
                         f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
                         int x_row = tm*8 + (lane_id%4)*2 + t;
                         int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
@@ -995,15 +1023,10 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 }
             }
         }
+        if constexpr (DEBUG)
+            LDBG[1] = clock()-start;
+        start = clock();
 
-        for(int t = 0; t < TPT; t++)
-        {
-            if (token_dest[t] < M * top_k)
-            {
-                const float topk_w = topk_weights[token_dest[t]];
-                token_scale[t/2][t%2] *= topk_w * scaling_factor;
-            }
-        }
 
         for (int compute_stage = 0; compute_stage < n_stages_down; compute_stage += 1)
         {
@@ -1080,6 +1103,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
             smem_stage++;
         }
+        if constexpr (DEBUG)
+            LDBG[2] = clock()-start;
     }
 }
 
@@ -1105,6 +1130,7 @@ void launch_fused_moe_kernel_up_down_acc(
 {
     constexpr int BK = 128;
     constexpr int PRODUCER_THREADS = 128;
+    constexpr bool DEBUG = true;
     dim3 dimBlock(32*WN + PRODUCER_THREADS, 1, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*WN)), std::ceil((float)sorted_num/(block_m)), 1);
 
@@ -1112,7 +1138,7 @@ void launch_fused_moe_kernel_up_down_acc(
                                sizeof(smem_down<STAGES, WN, BM, BK, BN>));
 
     gpuErrchk(cudaFuncSetAttribute(
-                fused_moe_w8a8_wgmma_up_down_acc_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS>,
+                fused_moe_w8a8_wgmma_up_down_acc_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS, DEBUG>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, sMemSize));
 
     // Create TMA descriptor for w (up projection)
@@ -1161,7 +1187,10 @@ void launch_fused_moe_kernel_up_down_acc(
                 );
     }
 
-    fused_moe_w8a8_wgmma_up_down_acc_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS><<<dimGrid, dimBlock, sMemSize>>>(
+    int* debug;
+    cudaMallocManaged(&debug, 3*dimGrid.x*dimGrid.y*32*WN*sizeof(int));
+
+    fused_moe_w8a8_wgmma_up_down_acc_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS, DEBUG><<<dimGrid, dimBlock, sMemSize>>>(
             x,
             x_scale,
             tensor_map_w,
@@ -1177,8 +1206,58 @@ void launch_fused_moe_kernel_up_down_acc(
             M,
             K,
             N,
-            scaling_factor
+            scaling_factor,
+            debug
             );
+    cudaDeviceSynchronize();
+
+    const int num_blocks = dimGrid.x*dimGrid.y*32*WN;
+    std::vector<int> up_times(num_blocks);
+    std::vector<int> quant_times(num_blocks);
+    std::vector<int> down_times(num_blocks);
+
+    for(int i = 0; i < num_blocks; i++)
+    {
+        up_times[i] = debug[i*3 + 0];
+        quant_times[i] = debug[i*3 + 1];
+        down_times[i] = debug[i*3 + 2];
+    }
+
+    // Clock frequency: 1.66 GHz, so 1 clock cycle = 1/1.66 nanoseconds
+    constexpr double clock_freq_ghz = 1.66;
+    constexpr double cycles_to_us = 1.0 / (1000*clock_freq_ghz);
+
+    auto compute_stats = [&](const std::vector<int>& times, const char* name) {
+        // Filter out zeros (from blocks that exited early)
+        std::vector<int> filtered_times;
+        for(int t : times) {
+            if(t > 0) filtered_times.push_back(t);
+        }
+
+        std::vector<int> sorted_times = filtered_times;
+        std::sort(sorted_times.begin(), sorted_times.end());
+
+        double sum = 0;
+        for(int t : filtered_times) sum += t;
+        double mean = sum / filtered_times.size();
+
+        int min_val = sorted_times[0];
+        int max_val = sorted_times.back();
+
+        printf("%s(%zu/%d): time %.2f(%.2f - %.2f) ", name, filtered_times.size()/(dimGrid.x*32*WN),
+                dimGrid.y,
+                mean * cycles_to_us,
+                min_val * cycles_to_us,
+                max_val * cycles_to_us);
+    };
+
+    printf("Config m %d n %d, warps %d, stages %d \n", BM, BN, WN, STAGES);
+    compute_stats(up_times, "Up");
+    compute_stats(quant_times, "Quant");
+    compute_stats(down_times, "Down");
+    printf("\n\n");
+
+    cudaFree(debug);
 }
 
 template<int BM, int BN, int WN>
