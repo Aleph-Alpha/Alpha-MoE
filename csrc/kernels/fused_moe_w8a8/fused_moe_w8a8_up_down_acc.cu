@@ -713,6 +713,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     //Tokens per thread
     constexpr int TPT = BM/4;
 
+    constexpr int TN2 = BN2/(64*WARPGROUPS);
+    __shared__ __align__(8) float scale_w[STAGES * WARPGROUPS * TN2/2];
     extern __shared__ __align__(1024) uint8_t sh[];
     smem_up<STAGES, WN, BM, BK, BN>& s = *reinterpret_cast<smem_up<STAGES, WN, BM, BK, BN>*>(sh);
 
@@ -800,7 +802,18 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 smem_stage = 0;
             }
             wait(bar + STAGES + smem_stage, p);
-
+            const int scale_rows_w = N2/block_shape[1];
+            const int scale_cols_w = K2/block_shape[0];
+            const int scales_per_stage = BN2 / block_shape[0];
+            int s_r = 0;//(w_row/2)/block_shape[1];
+            if(threadIdx.x < WARPGROUPS * TN2/2)
+            {
+                uint32_t smem = __cvta_generic_to_shared(scale_w + smem_stage * WARPGROUPS * TN2 / 2 + threadIdx.x);
+                CP_ASYNC_CG4(smem,
+                        &w2_scale[exp_idx * scale_rows_w * scale_cols_w +
+                        s_r*scale_cols_w +
+                        load_stage*scales_per_stage + threadIdx.x], 4);
+            }
             if(threadIdx.x == 0)
             {
                 const int w_row_down = blockIdx.x*BK2;
@@ -808,7 +821,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 expect_bytes(bar+smem_stage, WS*sizeof(fp8));
                 load_async(s_d.w + smem_stage*WS, &tensor_map_w2, bar + smem_stage, w_col_down, w_row_down);
             }
-            arrive(bar + smem_stage);
+            cp_async_mbarrier_arrive(bar + smem_stage);
             smem_stage++;
         }
     }
@@ -970,7 +983,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
         }
 
-        constexpr int TN2 = BN2/(64*WARPGROUPS);
         for (int compute_stage = 0; compute_stage < n_stages_down; compute_stage += 1)
         {
             if (smem_stage == STAGES)
@@ -978,22 +990,15 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 p^=1;
                 smem_stage = 0;
             }
-
-            const int scale_rows_w = N2/block_shape[1];
-            const int scale_cols_w = K2/block_shape[0];
-            const int scales_per_stage = BN2 / block_shape[0];
-            const int scales_per_wg = (TN2 * 64) / block_shape[0];
-            float scale_w[TN2/2];
-            int s_r = (w_row/2)/block_shape[1];
-            for (int i = 0; i<(TN2/2); i++)
-                scale_w[i] = w2_scale[exp_idx * scale_rows_w * scale_cols_w + s_r*scale_cols_w + compute_stage*scales_per_stage + (warp_id/4)*scales_per_wg + i];
-
+            float s_w[TN2/2];
 
             float tile_acc[TN2][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             fp8* sx = s_d.x;
             wait(bar + smem_stage, p);
             warpgroup_arrive();
+            for (int i = 0; i<(TN2/2); i++)
+                s_w[i] = scale_w[smem_stage*WARPGROUPS*(TN2/2) + (warp_id/4)*(TN2/2) + i];
 
             for(int tn2 = 0; tn2 < TN2; tn2++)
             {
@@ -1022,7 +1027,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                         if(out_row < M)
                         {
                             int s = t%2;
-                            tile[t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*scale_w[tn2/2];
+                            tile[t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*s_w[tn2/2];
                         }
                     }
                     int out_row = tm * 8 + lane_id%8;
