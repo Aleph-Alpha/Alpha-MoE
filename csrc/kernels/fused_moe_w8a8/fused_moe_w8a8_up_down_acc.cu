@@ -736,7 +736,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
     constexpr int TM = BM/8;
     constexpr int TN = BN/16;
-    float f_acc[TN][TM][4];
+    nv_bfloat16 f_acc[TN][TM][4];
     memset(f_acc, 0, sizeof(f_acc));
 
     int token_dest[TPT];
