@@ -722,6 +722,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     smem_up<STAGES, WN, BM, BK, BN>& s = *reinterpret_cast<smem_up<STAGES, WN, BM, BK, BN>*>(sh);
 
     __shared__ __align__(8) uint64_t bar[2*STAGES];
+    __shared__ float topk_scales[BM];
     if (threadIdx.x == 0)
     {
         for (int i = 0; i < STAGES; i++)
@@ -754,9 +755,20 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         // reg_dealloc<32>();
         constexpr int X_IT = const_ceil(XS/float(PRODUCER_THREADS*TO));
         int tsrc[X_IT];
+        int i = (threadIdx.x)*TO;
         for(int r = 0; r < X_IT; r += 1)
         {
-            tsrc[r] = sorted_token_ids[warpM*BM + r*(PRODUCER_THREADS/8) + threadIdx.x/8] / top_k;
+            if (i < XS)
+            {
+                int tdest = sorted_token_ids[warpM*BM + r*(PRODUCER_THREADS/8) + threadIdx.x/8];
+                tsrc[r] = tdest / top_k;
+                if(threadIdx.x % 8 == 0 && tsrc[r] < M && i < XS)
+                {
+                    uint32_t smem = __cvta_generic_to_shared(&topk_scales[r*(PRODUCER_THREADS/8) + threadIdx.x/8]);
+                    CP_ASYNC_CG4(smem, topk_weights + tdest, 4);
+                }
+            }
+            i += PRODUCER_THREADS*TO;
         }
         int smem_stage = 0;
         const int w_row_up = exp_idx * N + (blockIdx.x)*WN*BN;
@@ -998,10 +1010,14 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
         for(int t = 0; t < TPT; t++)
         {
-            if (token_dest[t] < M * top_k)
+            int token_idx = (t/2)*8 + (lane_id%4)*2 + t%2;
+            if (token_src[t] < M)
             {
-                const float topk_w = topk_weights[token_dest[t]];
+                // const float topk_w = topk_weights[token_dest[t]];
+                const float topk_w = topk_scales[token_idx];
                 token_scale[t/2][t%2] *= topk_w * scaling_factor;
+                // if(topk_scales[token_idx] != topk_weights[token_dest[t]])
+                //     printf(" got %f, expected %f\n",topk_scales[token_idx], topk_weights[token_dest[t]]);
             }
         }
 
