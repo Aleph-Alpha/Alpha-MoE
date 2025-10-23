@@ -745,8 +745,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     nv_bfloat16 f_acc[TN][TM][4];
     memset(f_acc, 0, sizeof(f_acc));
 
-    int token_dest[TPT];
-    int token_src[TPT];
     int p = 0;
     // PRODUCER
     if (is_producer)
@@ -859,17 +857,12 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     // CONSUMER
     else
     {
-        for(int t = 0; t < TPT; t+=2)
-        {
-            int2 tdst = *reinterpret_cast<const int2*>(&sorted_token_ids[warpM*BM + t*4 + (lane_id%4)*2]);
-            token_dest[t] = tdst.x;
-            token_dest[t+1] = tdst.y;
-
-            token_src[t] = token_dest[t]/top_k;
-            token_src[t+1] = token_dest[t+1]/top_k;
-        }
+        //     token_src[t+1] = tdst.y/top_k;
         // reg_alloc<128>();
         // Empty barriers arrive instantly
+        int token_src = M;
+        if(threadIdx.x < PRODUCER_THREADS + BM)
+            token_src = sorted_token_ids[warpM*BM + threadIdx.x-PRODUCER_THREADS] / top_k;
         for (int i = 0; i < STAGES; i++)
             arrive(&bar[STAGES + i]);
 
@@ -890,13 +883,10 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             float scale_x[TPT];
             for(int t = 0; t < TPT; t+=2)
             {
-                if (token_src[t] < M)
-                {
-                    int token_idx = (t/2)*8 + (lane_id%4)*2;
-                    float2 sx = *reinterpret_cast<const float2*>(&s.scale_x_up[smem_stage * BM + token_idx]);
-                    scale_x[t] = sx.x;
-                    scale_x[t+1] = sx.y;
-                }
+                int token_idx = (t/2)*8 + (lane_id%4)*2;
+                float2 sx = *reinterpret_cast<const float2*>(&s.scale_x_up[smem_stage * BM + token_idx]);
+                scale_x[t] = sx.x;
+                scale_x[t+1] = sx.y;
             }
             float scale_w[2];
             int s_r = w_row/(block_shape[1]*2);
@@ -960,7 +950,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 16), token_max[tm]);
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 8), token_max[tm]);
             token_max[tm] = __hmax2(__shfl_xor_sync(0xFFFFFFFF, token_max[tm], 4), token_max[tm]);
-            if (token_src[tm*2] < M && lane_id < 4)
+            if (lane_id < 4)
             {
                 int off = tm*8 + (lane_id)*2;
                 reinterpret_cast<nv_bfloat162*>(block_max + off * WARPGROUPS)[warp_id] = token_max[tm];
@@ -973,32 +963,29 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
         for(int tm = 0; tm<TM; tm++)
         {
-            if (token_src[tm*2] < M)
+            int off = tm*8 + (lane_id%4)*2;
+            for(int wg = 0; wg < WARPGROUPS; wg++)
             {
-                int off = tm*8 + (lane_id%4)*2;
-                for(int wg = 0; wg < WARPGROUPS; wg++)
+                float4 bmax = block_max[off * WARPGROUPS + wg];
+                token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.x), token_max[tm]);
+                token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.y), token_max[tm]);
+                token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.z), token_max[tm]);
+                token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.w), token_max[tm]);
+            }
+            token_scale[tm][0] = float(token_max[tm].x) / fp8_max;
+            token_scale[tm][1] = float(token_max[tm].y) / fp8_max;
+            for (int t = 0; t < 2; t++)
+            {
+                for(int tn = 0; tn<TN; tn++)
                 {
-                    float4 bmax = block_max[off * WARPGROUPS + wg];
-                    token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.x), token_max[tm]);
-                    token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.y), token_max[tm]);
-                    token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.z), token_max[tm]);
-                    token_max[tm] = __hmax2(*reinterpret_cast<nv_bfloat162*>(&bmax.w), token_max[tm]);
-                }
-                token_scale[tm][0] = float(token_max[tm].x) / fp8_max;
-                token_scale[tm][1] = float(token_max[tm].y) / fp8_max;
-                for (int t = 0; t < 2; t++)
-                {
-                    for(int tn = 0; tn<TN; tn++)
-                    {
-                        float val = f_acc[tn][tm][t];
-                        float q = val / token_scale[tm][t];
-                        f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
-                        int x_row = tm*8 + (lane_id%4)*2 + t;
-                        int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
-                        int i = x_row*BK2 + x_col;
-                        int swizzled = swizzle<S_BITS_DOWN>(i);
-                        s_d.x[swizzled] = fp8(f_acc[tn][tm][t]);
-                    }
+                    float val = f_acc[tn][tm][t];
+                    float q = val / token_scale[tm][t];
+                    f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
+                    int x_row = tm*8 + (lane_id%4)*2 + t;
+                    int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
+                    int i = x_row*BK2 + x_col;
+                    int swizzled = swizzle<S_BITS_DOWN>(i);
+                    s_d.x[swizzled] = fp8(f_acc[tn][tm][t]);
                 }
             }
         }
@@ -1007,12 +994,9 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         for(int t = 0; t < TPT; t+=2)
         {
             int token_idx = (t/2)*8 + (lane_id%4)*2;
-            if (token_src[t] < M)
-            {
-                const float2 topk_w = *reinterpret_cast<const float2*>(&topk_scales[token_idx]);
-                token_scale[t/2][0] *= topk_w.x * scaling_factor;
-                token_scale[t/2][1] *= topk_w.y * scaling_factor;
-            }
+            const float2 topk_w = *reinterpret_cast<const float2*>(&topk_scales[token_idx]);
+            token_scale[t/2][0] *= topk_w.x * scaling_factor;
+            token_scale[t/2][1] *= topk_w.y * scaling_factor;
         }
 
         consumer_sync();
@@ -1057,12 +1041,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     __nv_bfloat16 tile[8];
                     for (int t = 0; t<8; t++)
                     {
-                        int out_row = token_src[tm*2 + t%2];
-                        if(out_row < M)
-                        {
-                            int s = t%2;
-                            tile[t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*s_w[tn2/2];
-                        }
+                        int s = t%2;
+                        tile[t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*s_w[tn2/2];
                     }
                     int out_row = tm * 8 + lane_id%8;
                     int out_col = (warp_id/4)*TN2*64 + (warp_id%4)*16 + (lane_id&8) + tn2*64 + (lane_id/16)*64;
@@ -1072,21 +1052,18 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
             cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
             consumer_sync();
-            if(warp_id == 0 && lane_id < 4)
+            if(threadIdx.x < PRODUCER_THREADS + BM)
             {
-                for(int t = 0; t < TPT; t++)
+                if (token_src < M)
                 {
-                    if (token_src[t] < M)
-                    {
-                        int row = (t/2)*8 + t%2 + lane_id*2;
-                        cuda::ptx::cp_reduce_async_bulk(
-                                cuda::ptx::space_global,
-                                cuda::ptx::space_shared,
-                                cuda::ptx::op_add,
-                                out + token_src[t]*N2 + compute_stage*BN2,
-                                s_d.out + row*PAD,
-                                BN2*sizeof(__nv_bfloat16));
-                    }
+                    int row = threadIdx.x - PRODUCER_THREADS;
+                    cuda::ptx::cp_reduce_async_bulk(
+                            cuda::ptx::space_global,
+                            cuda::ptx::space_shared,
+                            cuda::ptx::op_add,
+                            out + token_src*N2 + compute_stage*BN2,
+                            s_d.out + row*PAD,
+                            BN2*sizeof(__nv_bfloat16));
                 }
                 cuda::ptx::cp_async_bulk_commit_group();
             }
