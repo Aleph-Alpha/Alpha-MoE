@@ -802,11 +802,10 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             const int scale_cols_w_up = K/block_shape[0];
             if(threadIdx.x < 2)
             {
-                int s_r = 0/(block_shape[1]*2);
                 uint32_t smem = __cvta_generic_to_shared(s.scale_w_up + smem_stage * 2 + threadIdx.x);
                 CP_ASYNC_CG4(smem,
                         &w_scale[exp_idx * scale_rows_w_up * scale_cols_w_up +
-                        (s_r + threadIdx.x)*scale_cols_w_up + load_stage], 4);
+                        (threadIdx.x)*scale_cols_w_up + load_stage], 4);
             }
             cp_async_mbarrier_arrive(bar + smem_stage);
 
@@ -831,13 +830,11 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             const int scale_rows_w = N2/block_shape[1];
             const int scale_cols_w = K2/block_shape[0];
             const int scales_per_stage = BN2 / block_shape[0];
-            int s_r = 0;//(w_row/2)/block_shape[1];
             if(threadIdx.x < WARPGROUPS * TN2/2)
             {
                 uint32_t smem = __cvta_generic_to_shared(s_d.scale_w_down + smem_stage * WARPGROUPS * TN2 / 2 + threadIdx.x);
                 CP_ASYNC_CG4(smem,
                         &w2_scale[exp_idx * scale_rows_w * scale_cols_w +
-                        s_r*scale_cols_w +
                         load_stage*scales_per_stage + threadIdx.x], 4);
             }
             if(threadIdx.x == 0)
@@ -854,7 +851,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     // CONSUMER
     else
     {
-        //     token_src[t+1] = tdst.y/top_k;
         // reg_alloc<128>();
         // Empty barriers arrive instantly
         int token_src = M;
@@ -919,7 +915,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                                 scale_w[0] * scale_x[tm*2 + 1] * tile_acc[tn][tm][1]
                                 )
                             );
-                    // f_acc[tn][tm][1] += ;
 
                     f_acc[tn][tm][1] = __hadd2(f_acc[tn][tm][1],
                             __nv_bfloat162(
@@ -927,8 +922,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                                 scale_w[1] * scale_x[tm*2 + 1] * tile_acc[tn][tm][3]
                                 )
                             );
-                    // f_acc[tn][tm][2] +=
-                    //     f_acc[tn][tm][3] += ;
                 }
             }
             smem_stage++;
