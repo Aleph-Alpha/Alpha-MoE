@@ -739,7 +739,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
     constexpr int TM = BM/8;
     constexpr int TN = BN/16;
-    nv_bfloat16 f_acc[TN][TM][4];
+    nv_bfloat162 f_acc[TN][TM][2];
     memset(f_acc, 0, sizeof(f_acc));
 
     int p = 0;
@@ -891,7 +891,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             scale_w[0] = sw.x;
             scale_w[1] = sw.y;
 
-
             float tile_acc[TN][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             warpgroup_arrive();
@@ -912,19 +911,24 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
             for(int tm = 0; tm<TM; tm++)
             {
-                float x_sc;
-                x_sc = scale_x[tm*2];
                 for(int tn = 0; tn<TN; tn++)
                 {
-                    f_acc[tn][tm][0] += scale_w[0] * x_sc * tile_acc[tn][tm][0];
-                    f_acc[tn][tm][2] += scale_w[1] * x_sc * tile_acc[tn][tm][2];
-                }
+                    f_acc[tn][tm][0] = __hadd2(f_acc[tn][tm][0],
+                            __nv_bfloat162(
+                                scale_w[0] * scale_x[tm*2] * tile_acc[tn][tm][0],
+                                scale_w[0] * scale_x[tm*2 + 1] * tile_acc[tn][tm][1]
+                                )
+                            );
+                    // f_acc[tn][tm][1] += ;
 
-                x_sc = scale_x[tm*2 + 1];
-                for(int tn = 0; tn<TN; tn++)
-                {
-                    f_acc[tn][tm][1] += scale_w[0] * x_sc * tile_acc[tn][tm][1];
-                    f_acc[tn][tm][3] += scale_w[1] * x_sc * tile_acc[tn][tm][3];
+                    f_acc[tn][tm][1] = __hadd2(f_acc[tn][tm][1],
+                            __nv_bfloat162(
+                                scale_w[1] * scale_x[tm*2] * tile_acc[tn][tm][2],
+                                scale_w[1] * scale_x[tm*2 + 1] * tile_acc[tn][tm][3]
+                                )
+                            );
+                    // f_acc[tn][tm][2] +=
+                    //     f_acc[tn][tm][3] += ;
                 }
             }
             smem_stage++;
@@ -938,9 +942,9 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         {
             for(int tm = 0; tm<TM; tm++)
             {
-                f_acc[tn][tm][0] = swiglu_mul(f_acc[tn][tm][0], f_acc[tn][tm][2]);
-                f_acc[tn][tm][1] = swiglu_mul(f_acc[tn][tm][1], f_acc[tn][tm][3]);
-                nv_bfloat162 abs = __habs2(nv_bfloat162(f_acc[tn][tm][0], f_acc[tn][tm][1]));
+                f_acc[tn][tm][0].x = swiglu_mul(f_acc[tn][tm][0].x, f_acc[tn][tm][1].x);
+                f_acc[tn][tm][0].y = swiglu_mul(f_acc[tn][tm][0].y, f_acc[tn][tm][1].y);
+                nv_bfloat162 abs = __habs2(f_acc[tn][tm][0]);
                 token_max[tm] = __hmax2(abs, token_max[tm]);
             }
         }
@@ -977,14 +981,14 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 for(int tn = 0; tn<TN; tn++)
                 {
-                    float val = f_acc[tn][tm][t];
+                    float val = t == 0 ? f_acc[tn][tm][0].x : f_acc[tn][tm][0].y;
                     float q = val / token_scale[tm][t];
-                    f_acc[tn][tm][t] = fminf(fmaxf(q, fp8_min), fp8_max);
+                    val = fminf(fmaxf(q, fp8_min), fp8_max);
                     int x_row = tm*8 + (lane_id%4)*2 + t;
                     int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
                     int i = x_row*BK2 + x_col;
                     int swizzled = swizzle<S_BITS_DOWN>(i);
-                    s_d.x[swizzled] = fp8(f_acc[tn][tm][t]);
+                    s_d.x[swizzled] = fp8(val);
                 }
             }
         }
