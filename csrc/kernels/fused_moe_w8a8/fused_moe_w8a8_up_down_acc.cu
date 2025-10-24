@@ -648,7 +648,7 @@ struct smem_down
     alignas(1024) fp8 w[STAGES*WN*BK*BN];
     alignas(1024) fp8 x[BM*WN*BN/2];
     alignas(16) __nv_bfloat16 out[BM*(BK*2 + 8)];
-    float scale_w_down[STAGES * (BK*2)/64];
+    float scale_w_down[STAGES * (BK*2)/128];
 };
 
 
