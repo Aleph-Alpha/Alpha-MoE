@@ -9,6 +9,7 @@ torch.utils.cpp_extension.COMMON_NVCC_FLAGS = []
 
 
 if __name__ == '__main__':
+    os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
 
     sources = ['./csrc/torch_interface.cpp',
                "./csrc/kernels/fused_moe_w8a8/fused_moe_w8a8.cu",
@@ -27,6 +28,7 @@ if __name__ == '__main__':
                "./csrc/kernels/fused_moe_w8a8/fused_mow_w8a8_up_down.cu",
                "./csrc/kernels/fused_moe_w8a8/fused_moe_w8a8_up_down_ast.cu",
                "./csrc/kernels/fused_moe_w8a8/fused_moe_w8a8_up_down_tma.cu",
+               "./csrc/kernels/fused_moe_w8a8/fused_moe_w8a8_up_down_acc.cu",
                ]
 
     setuptools.setup(
