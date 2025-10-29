@@ -218,6 +218,7 @@ torch::Tensor fused_moe_launcher_up_down(
         torch::Tensor& expert_ids,
         torch::Tensor& num_tokens_post_padded,
         torch::Tensor& topk_weights,
+        torch::Tensor& out,
         int top_k,
         int kernel_variant,
         int block_m,
@@ -229,7 +230,6 @@ torch::Tensor fused_moe_launcher_up_down(
         )
 {
     auto options = torch::TensorOptions().dtype(at::ScalarType::BFloat16).device(w.device());
-    torch::Tensor out = torch::zeros({x.size(0)*top_k, x.size(1)}, options);
     switch (kernel_variant)
     {
         case 0:
@@ -290,7 +290,6 @@ torch::Tensor fused_moe_launcher_up_down(
             block_m);
             break;
         case 3:
-            out = torch::zeros({x.size(0), x.size(1)}, options);
             fused_moe_w8a8_wgmma_up_down_acc(static_cast<__nv_fp8_e4m3*>(x.data_ptr()),
             static_cast<float*>(x_scale.data_ptr()),
             static_cast<__nv_fp8_e4m3*>(w.data_ptr()),
