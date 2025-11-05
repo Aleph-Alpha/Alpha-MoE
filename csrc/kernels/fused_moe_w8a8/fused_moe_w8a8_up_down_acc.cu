@@ -711,19 +711,25 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
 
     constexpr int TN2 = BN2/(64*WARPGROUPS);
     constexpr int scales_per_stage_down = BN2 / block_shape[0];
+
+    constexpr int TM = BM/8;
+    constexpr int TN = BN/16;
+
+    constexpr int WS_STG = WS/TN;
+
     // Shared memory for scales
     extern __shared__ __align__(1024) uint8_t sh[];
     smem_up<STAGES, WN, BM, BK, BN>& s = *reinterpret_cast<smem_up<STAGES, WN, BM, BK, BN>*>(sh);
 
-    __shared__ __align__(8) uint64_t bar[2*STAGES];
+    __shared__ __align__(8) uint64_t bar[2*STAGES*TN];
     __shared__ float topk_scales[BM];
     __shared__ float scale_w_down[2*STAGES * (BK*2)/128];
     if (threadIdx.x == 0)
     {
-        for (int i = 0; i < STAGES; i++)
+        for (int i = 0; i < STAGES*TN; i++)
         {
             init_barrier(&bar[i], PRODUCER_THREADS + 1, 0);
-            init_barrier(&bar[i + STAGES], CONSUMER_THREADS, 0);
+            init_barrier(&bar[i + STAGES*TN], CONSUMER_THREADS, 0);
         }
     }
     __syncthreads();
@@ -735,8 +741,6 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
     int n_stages_up = K/block_shape[0];
     int n_stages_down = N2/BN2;
 
-    constexpr int TM = BM/8;
-    constexpr int TN = BN/16;
     nv_bfloat162 f_acc[TN][TM][2];
     memset(f_acc, 0, sizeof(f_acc));
 
@@ -772,46 +776,54 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 p^=1;
                 smem_stage = 0;
             }
-            const int off = load_stage * block_shape[0];
-            int i = (threadIdx.x)*TO;
-            int col = off + i%BK;
-            int swizzled = swizzle<S_BITS_UP>(i);
-
-            wait(bar + STAGES + smem_stage, p);
-
-            for(int r = 0; r < X_IT; r += 1)
+            wait(bar + STAGES*TN + smem_stage*TN + TN-1, p);
+            for (int tn = 0; tn<TN; tn ++)
             {
-                int row = tsrc[r];
-                if(row < M && i < XS)
+                const int off = load_stage * block_shape[0];
+                int i = (threadIdx.x)*TO;
+                int col = off + i%BK;
+                int swizzled = swizzle<S_BITS_UP>(i);
+
+                wait(bar + STAGES*TN + smem_stage*TN + tn, p);
+                // if(blockIdx.x == 0 && threadIdx.x == 0 && blockIdx.y == 0)
+                //     printf("loading %d(%d), tn %d, %d \n", load_stage, smem_stage, tn, p);
+
+                if(tn == 0)
                 {
-                    uint32_t sm = __cvta_generic_to_shared(s.x + smem_stage*XS + swizzled);
-                    CP_ASYNC_CG(sm, reinterpret_cast<const float4*>(x + row*K + col), TB);
-                    if(smem_stage == 0 && threadIdx.x % 8 < STAGES && load_stage + threadIdx.x%8 < n_stages_up)
+                    for(int r = 0; r < X_IT; r += 1)
                     {
-                        uint32_t smem = __cvta_generic_to_shared(s.scale_x_up + p*STAGES*BM +
-                                + (threadIdx.x%8) * BM + r * (PRODUCER_THREADS/8) + threadIdx.x/8);
-                        CP_ASYNC_CG4(smem, &x_scale[row*(K/block_shape[1]) + load_stage + threadIdx.x%8], 4);
+                        int row = tsrc[r];
+                        if(row < M && i < XS)
+                        {
+                            uint32_t sm = __cvta_generic_to_shared(s.x + smem_stage*XS + swizzled);
+                            CP_ASYNC_CG(sm, reinterpret_cast<const float4*>(x + row*K + col), TB);
+                            if(smem_stage == 0 && threadIdx.x % 8 < STAGES && load_stage + threadIdx.x%8 < n_stages_up)
+                            {
+                                uint32_t smem = __cvta_generic_to_shared(s.scale_x_up + p*STAGES*BM +
+                                        + (threadIdx.x%8) * BM + r * (PRODUCER_THREADS/8) + threadIdx.x/8);
+                                CP_ASYNC_CG4(smem, &x_scale[row*(K/block_shape[1]) + load_stage + threadIdx.x%8], 4);
+                            }
+                        }
+                        i += PRODUCER_THREADS*TO;
+                        swizzled += PRODUCER_THREADS*TO;
+                    }
+                    const int scale_rows_w_up = N/block_shape[1];
+                    const int scale_cols_w_up = K/block_shape[0];
+                    if(smem_stage == 0 && load_stage + threadIdx.x/2 < n_stages_up && threadIdx.x/2 < STAGES)
+                    {
+                        uint32_t smem = __cvta_generic_to_shared(s.scale_w_up + p*STAGES*2 + threadIdx.x);
+                        CP_ASYNC_CG4(smem,
+                                &w_scale[exp_idx * scale_rows_w_up * scale_cols_w_up +
+                                (threadIdx.x%2)*scale_cols_w_up + load_stage + threadIdx.x/2], 4);
                     }
                 }
-                i += PRODUCER_THREADS*TO;
-                swizzled += PRODUCER_THREADS*TO;
-            }
+                cp_async_mbarrier_arrive(bar + smem_stage*TN + tn);
 
-            const int scale_rows_w_up = N/block_shape[1];
-            const int scale_cols_w_up = K/block_shape[0];
-            if(smem_stage == 0 && load_stage + threadIdx.x/2 < n_stages_up && threadIdx.x/2 < STAGES)
-            {
-                uint32_t smem = __cvta_generic_to_shared(s.scale_w_up + p*STAGES*2 + threadIdx.x);
-                CP_ASYNC_CG4(smem,
-                        &w_scale[exp_idx * scale_rows_w_up * scale_cols_w_up +
-                        (threadIdx.x%2)*scale_cols_w_up + load_stage + threadIdx.x/2], 4);
-            }
-            cp_async_mbarrier_arrive(bar + smem_stage);
-
-            if(threadIdx.x == 0)
-            {
-                expect_bytes(bar+smem_stage, WS*sizeof(fp8));
-                load_async(s.w + smem_stage*WS, &tensor_map_w, bar + smem_stage, w_row_up, off);
+                if(threadIdx.x == 0)
+                {
+                    expect_bytes(bar+smem_stage*TN + tn, WS_STG*sizeof(fp8));
+                    load_async(s.w + smem_stage*WS + tn*64*BK , &tensor_map_w, bar + smem_stage*TN + tn, w_row_up+tn*64, off);
+                }
             }
             smem_stage++;
         }
@@ -825,7 +837,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 p^=1;
                 smem_stage = 0;
             }
-            wait(bar + STAGES + smem_stage, p);
+            wait(bar + STAGES*TN + smem_stage*TN + TN-1, p);
             const int scale_rows_w = N2/block_shape[1];
             const int scale_cols_w = K2/block_shape[0];
             if((load_stage)%STAGES == 0 && threadIdx.x < STAGES * scales_per_stage_down && load_stage + (threadIdx.x/scales_per_stage_down) < n_stages_down)
@@ -839,10 +851,10 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 const int w_row_down = blockIdx.x*BK2;
                 const int w_col_down = exp_idx * N2 + load_stage*BN2;
-                expect_bytes(bar+smem_stage, WS*sizeof(fp8));
-                load_async(s_d.w + smem_stage*WS, &tensor_map_w2, bar + smem_stage, w_col_down, w_row_down);
+                expect_bytes(bar+smem_stage*TN + TN-1, WS*sizeof(fp8));
+                load_async(s_d.w + smem_stage*WS, &tensor_map_w2, bar + smem_stage*TN + TN-1, w_col_down, w_row_down);
             }
-            cp_async_mbarrier_arrive(bar + smem_stage);
+            cp_async_mbarrier_arrive(bar + smem_stage*TN + TN-1);
             smem_stage++;
         }
     }
@@ -854,8 +866,8 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
         int token_src = M;
         if(threadIdx.x < PRODUCER_THREADS + BM)
             token_src = sorted_token_ids[warpM*BM + threadIdx.x-PRODUCER_THREADS] / top_k;
-        for (int i = 0; i < STAGES; i++)
-            arrive(&bar[STAGES + i]);
+        for (int i = 0; i < STAGES*TN; i++)
+            arrive(&bar[STAGES*TN + i]);
 
 
         int smem_stage = 0;
@@ -866,72 +878,92 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                 p^=1;
                 smem_stage = 0;
             }
-            wait(bar + smem_stage, p);
-
             float scale_x[TPT];
-            for(int t = 0; t < TPT; t+=2)
-            {
-                int token_idx = (t/2)*8 + (lane_id%4)*2;
-                float2 sx = *reinterpret_cast<const float2*>(&s.scale_x_up[p*STAGES*BM + smem_stage * BM + token_idx]);
-                scale_x[t] = sx.x;
-                scale_x[t+1] = sx.y;
-            }
             float scale_w[2];
-            float2 sw = *reinterpret_cast<const float2*>(&s.scale_w_up[p*STAGES*2 + smem_stage * 2]);
-            scale_w[0] = sw.x;
-            scale_w[1] = sw.y;
-
-            float tile_acc[TN][TM][4];
-            memset(tile_acc, 0, sizeof(tile_acc));
-            // https://github.com/NVIDIA/cutlass/discussions/1375
-            // This is cursed
-            for (int tn = 0; tn < TN; tn++)
-            {
-                for (int tm = 0; tm < TM; tm++)
-                {
-                    for (int t = 0; t < 4; t++)
-                        asm volatile("" : "+f"(tile_acc[tn][tm][t]) :: "memory");
-                }
-            }
-
-            cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
-            warpgroup_arrive();
             for(int tn = 0; tn<TN; tn++)
             {
+                wait(bar + smem_stage*TN + tn, p);
+
+                if(tn == 0)
+                {
+                    for(int t = 0; t < TPT; t+=2)
+                    {
+                        int token_idx = (t/2)*8 + (lane_id%4)*2;
+                        float2 sx = *reinterpret_cast<const float2*>(&s.scale_x_up[p*STAGES*BM + smem_stage * BM + token_idx]);
+                        scale_x[t] = sx.x;
+                        scale_x[t+1] = sx.y;
+                    }
+                    float2 s_w = *reinterpret_cast<const float2*>(&s.scale_w_up[p*STAGES*2 + smem_stage * 2]);
+                    scale_w[0] = s_w.x;
+                    scale_w[1] = s_w.y;
+                }
+
+                float tile_acc[TM][4];
+                memset(tile_acc, 0, sizeof(tile_acc));
+                // https://github.com/NVIDIA/cutlass/discussions/1375
+                // This is cursed
+                {
+                    for (int tm = 0; tm < TM; tm++)
+                    {
+                        for (int t = 0; t < 4; t++)
+                            asm volatile("" : "+f"(tile_acc[tm][t]) :: "memory");
+                    }
+                }
+
+                cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
+                warpgroup_arrive();
                 fp8* sw = s.w + smem_stage*WS + (warp_id/4)*(BN*4)*BK + tn*64*BK;
                 fp8* sx = s.x + smem_stage*XS;
                 uint64_t desc_w = make_smem_descriptor<64, 1, S_MODE_UP>(sw);
                 uint64_t desc_x = make_smem_descriptor<64, 1, S_MODE_UP>(sx);
-                wgmma<1,1,1, BM>(tile_acc[tn], desc_w, desc_x);
-                wgmma<1,1,1, BM>(tile_acc[tn], desc_w+1*(32>>4), desc_x+1*(32>>4));
-                wgmma<1,1,1, BM>(tile_acc[tn], desc_w+2*(32>>4), desc_x+2*(32>>4));
-                wgmma<1,1,1, BM>(tile_acc[tn], desc_w+3*(32>>4), desc_x+3*(32>>4));
-            }
-            warpgroup_commit_batch();
-            warpgroup_wait();
-            arrive(bar + STAGES + smem_stage);
+                wgmma<1,1,1, BM>(tile_acc, desc_w, desc_x);
+                wgmma<1,1,1, BM>(tile_acc, desc_w+1*(32>>4), desc_x+1*(32>>4));
+                wgmma<1,1,1, BM>(tile_acc, desc_w+2*(32>>4), desc_x+2*(32>>4));
+                wgmma<1,1,1, BM>(tile_acc, desc_w+3*(32>>4), desc_x+3*(32>>4));
+                warpgroup_commit_batch();
+                warpgroup_wait();
+                // if(blockIdx.x == 0 && threadIdx.x == PRODUCER_THREADS && blockIdx.y == 0 && tn == 1)
+                //     printf("running stage %d, tn %d, exp %d, scale_w %f, %f, w %f, %f,%f,%f, acc %f %f\n",
+                //             compute_stage, tn, exp_idx, scale_x[0], scale_x[1],
+                //             float(sw[0]),
+                //             float(sw[1]),
+                //             float(sw[2]),
+                //             float(sw[3]),
+                //             scale_w[0] * scale_x[0] * tile_acc[0][0],
+                //             scale_w[1] * scale_x[0] * tile_acc[0][2]
+                //             );
+                arrive(bar + STAGES*TN + smem_stage*TN + tn);
 
-            for(int tm = 0; tm<TM; tm++)
-            {
-                for(int tn = 0; tn<TN; tn++)
+                // if(blockIdx.x == 0 && threadIdx.x == PRODUCER_THREADS && blockIdx.y == 0)
+                //     printf("computing %d(%d), tn %d, %d \n", compute_stage, smem_stage, tn, p);
+
+
+                for(int tm = 0; tm<TM; tm++)
                 {
                     f_acc[tn][tm][0] = __hadd2(f_acc[tn][tm][0],
                             __nv_bfloat162(
-                                scale_w[0] * scale_x[tm*2] * tile_acc[tn][tm][0],
-                                scale_w[0] * scale_x[tm*2 + 1] * tile_acc[tn][tm][1]
+                                scale_w[0] * scale_x[tm*2] * tile_acc[tm][0],
+                                scale_w[0] * scale_x[tm*2 + 1] * tile_acc[tm][1]
                                 )
                             );
 
                     f_acc[tn][tm][1] = __hadd2(f_acc[tn][tm][1],
                             __nv_bfloat162(
-                                scale_w[1] * scale_x[tm*2] * tile_acc[tn][tm][2],
-                                scale_w[1] * scale_x[tm*2 + 1] * tile_acc[tn][tm][3]
+                                scale_w[1] * scale_x[tm*2] * tile_acc[tm][2],
+                                scale_w[1] * scale_x[tm*2 + 1] * tile_acc[tm][3]
                                 )
                             );
                 }
             }
             smem_stage++;
         }
+        // if(blockIdx.x == 0 && threadIdx.x == PRODUCER_THREADS && blockIdx.y == 0)
+        //     printf("final result %f, %f = %f ,%f, %f\n",
+        //             float(f_acc[1][0][0].x),
+        //             float(f_acc[1][0][1].x),
+        //             swiglu_mul(f_acc[1][0][0].x, f_acc[1][0][1].x),
+        //             float(f_acc[1][0][0].y),
+        //             float(f_acc[1][0][1].y));
         consumer_sync();
         smem_down<STAGES, WN, BM, BK, BN>& s_d = *reinterpret_cast<smem_down<STAGES, WN, BM, BK, BN>*>(sh);
         float4* block_max = reinterpret_cast<float4*>(s_d.out);
@@ -987,10 +1019,25 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
                     int x_col = (warp_id/4)*(TN*32) + tn*32 + (warp_id%4)*8 + lane_id/4;
                     int i = x_row*BK2 + x_col;
                     int swizzled = swizzle<S_BITS_DOWN>(i);
+                    // if(blockIdx.x == 0 && threadIdx.x == PRODUCER_THREADS && blockIdx.y == 0 && t == 0 && tn == 1)
+                    //     printf("safing %f, %f, %d %d, %d\n", float(f_acc[tn][tm][0].x), val, x_row, x_col, swizzled);
                     s_d.x[swizzled] = fp8(val);
                 }
             }
         }
+        //
+        // if(blockIdx.x == 0 && threadIdx.x == PRODUCER_THREADS && blockIdx.y == 0)
+        // {
+        //     for(int i = 0; i<128; i++)
+        //     {
+        //         int swizzled = swizzle<S_BITS_DOWN>(i);
+        //         printf("%f,", token_scale[0][0] * float(s_d.x[swizzled]));
+        //         if(i%16 == 15)
+        //             printf("\n");
+        //     }
+        //     printf("\n");
+        // }
+
 
 
         for(int t = 0; t < TPT; t+=2)
@@ -1015,7 +1062,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             float tile_acc[TN2][TM][4];
             memset(tile_acc, 0, sizeof(tile_acc));
             fp8* sx = s_d.x;
-            wait(bar + smem_stage, p);
+            wait(bar + smem_stage*TN +TN - 1, p);
             for (int tn = 0; tn < TN2; tn++)
             {
                 for (int tm = 0; tm < TM; tm++)
@@ -1046,7 +1093,7 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             }
             warpgroup_commit_batch();
             warpgroup_wait();
-            arrive(bar + STAGES + smem_stage);
+            arrive(bar + STAGES*TN + smem_stage*TN + TN-1);
 
             constexpr int PAD = BN2+8;
             asm volatile("cp.async.bulk.wait_group 0;");
@@ -1121,6 +1168,7 @@ void launch_fused_moe_kernel_up_down_acc(
     gpuErrchk(cudaFuncSetAttribute(
                 fused_moe_w8a8_wgmma_up_down_acc_kernel<BM, BK, BN, WN, STAGES, PRODUCER_THREADS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, sMemSize));
+    constexpr int TN = BN/16;
 
     // Create TMA descriptor for w (up projection)
     CUtensorMap tensor_map_w{};
@@ -1128,7 +1176,7 @@ void launch_fused_moe_kernel_up_down_acc(
         constexpr uint32_t rank = 2;
         uint64_t size[rank] = {static_cast<uint64_t>(K), static_cast<uint64_t>(N*257)};
         uint64_t stride[rank] = {static_cast<uint64_t>(K) * sizeof(fp8)};
-        uint32_t box_size[rank] = {BK, BN*WN};
+        uint32_t box_size[rank] = {BK, (BN*WN)/TN};
         uint32_t elem_stride[rank] = {1, 1};
         auto cuTensorMapEncodeTiled = get_cuTensorMapEncodeTiled();
         CUresult res = cuTensorMapEncodeTiled(
@@ -1232,7 +1280,7 @@ void dispatch_bn_wn(
         float scaling_factor)
 {
     if (bn == 32 && wn == 8) {
-        dispatch_stages<BM, 32, 8>(stages, producer_threads, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor);
+        // dispatch_stages<BM, 32, 8>(stages, producer_threads, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor);
     }
     else if (bn == 64 && wn == 4) {
         dispatch_stages<BM, 64, 4>(stages, producer_threads, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor);
