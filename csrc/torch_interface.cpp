@@ -1,4 +1,5 @@
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cuda.h>
 #include <cuda_fp8.h>
 #include <cuda_bf16.h>
@@ -28,7 +29,8 @@ void fused_moe_w8a8_wgmma_up_down_acc(
         int warp_n,
         int stages,
         int producer_threads,
-        float scaling_factor
+        float scaling_factor,
+        cudaStream_t stream
 );
 
 // CUDA implementation
@@ -52,6 +54,8 @@ void fused_moe_w8a8_up_down(
         int64_t producer_threads,
         double scaling_factor
 ) {
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
     fused_moe_w8a8_wgmma_up_down_acc(
             static_cast<__nv_fp8_e4m3*>(x.data_ptr()),
             static_cast<float*>(x_scale.data_ptr()),
@@ -74,7 +78,8 @@ void fused_moe_w8a8_up_down(
             static_cast<int>(warp_n),
             static_cast<int>(stages),
             static_cast<int>(producer_threads),
-            static_cast<float>(scaling_factor)
+            static_cast<float>(scaling_factor),
+            stream
     );
 }
 
