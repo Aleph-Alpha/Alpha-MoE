@@ -16,7 +16,8 @@ if __name__ == '__main__':
                ]
 
     setuptools.setup(
-        name='alpha-kernel-python',
+        name='alpha_kernel_python',
+        packages=setuptools.find_packages(include=["alpha_kernel_python"]),
         version='0.0.1',
         ext_modules=[
             CUDAExtension(
