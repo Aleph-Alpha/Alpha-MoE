@@ -63,29 +63,58 @@ def parse_arguments():
     parser.add_argument('--balancedness',
                         type=float,
                         nargs='+',
-                        default=[],
-                        help='Balancedness values to test (default: [])')
+                        default=[0.8, 0.7, 0.6, 0.5],
+                        help='Balancedness values to test ')
+
+    parser.add_argument('--N',
+                        type=int,
+                        default=512,
+                        help='N dimension for MoE')
+
+    parser.add_argument('--K',
+                        type=int,
+                        default=7168,
+                        help='K dimension for MoE')
+
+    parser.add_argument('--E',
+                        type=int,
+                        default=256,
+                        help='num_experts for MoE(not including shared expert)')
+
+    parser.add_argument('--top-k',
+                        type=int,
+                        default=8,
+                        help='top-k experts picked')
+
+    parser.add_argument('--shared-expert',
+                        default=True,
+                        action=argparse.BooleanOptionalAction,
+                        help='If MoE is using a shared expert')
+
+    parser.add_argument('--out-config',
+                        default=None,
+                        help='Where to store config, default: moe_jit_E_N_K.json')
 
     return parser.parse_args()
 
 torch.manual_seed(42)
 torch.set_default_device("cuda:0")
 
-num_tokens = 8192
-hidden_size = 7168
-top_k = 9 # 8 picked + 1 shared
-block_shape = [128, 128]
-E = 257
-N = 256
-K = 7168
-w1 = torch.randn((E, N, K)).to(torch.float8_e4m3fn).to("cuda:0")
-w2 = torch.randn((E, K, N//2)).to(torch.float8_e4m3fn).to("cuda:0")
-
-w1_scale = torch.randn((E, w1.shape[1]//block_shape[0], w1.shape[2]//block_shape[1]), dtype=torch.float32) * 0.01
-w2_scale = torch.randn((E, w2.shape[1]//block_shape[0], w2.shape[2]//block_shape[1]), dtype=torch.float32) * 0.01
 
 if __name__ == "__main__":
     args = parse_arguments()
+
+    hidden_size = args.K
+    top_k = args.top_k + args.shared_expert
+    block_shape = [128, 128]
+    E = args.E + args.shared_expert
+    N = args.N
+    K = args.K
+    w1 = torch.randn((E, N, K)).to(torch.float8_e4m3fn).to("cuda:0")
+    w2 = torch.randn((E, K, N//2)).to(torch.float8_e4m3fn).to("cuda:0")
+
+    w1_scale = torch.randn((E, w1.shape[1]//block_shape[0], w1.shape[2]//block_shape[1]), dtype=torch.float32) * 0.01
+    w2_scale = torch.randn((E, w2.shape[1]//block_shape[0], w2.shape[2]//block_shape[1]), dtype=torch.float32) * 0.01
 
     batch_sizes = args.batch_sizes
     balancedness_values = args.balancedness
@@ -104,7 +133,8 @@ if __name__ == "__main__":
         all_topks = []
         for balancedness in balancedness_values:
             topk_ids = generate_topk_ids(E-1, num_tokens, top_k-1)
-            topk_ids = torch.hstack((topk_ids, torch.ones(num_tokens).view(num_tokens,1).to(torch.int32)*(E-1)))
+            if args.shared_expert:
+                topk_ids = torch.hstack((topk_ids, torch.ones(num_tokens).view(num_tokens,1).to(torch.int32)*(E-1)))
             all_topks.append(topk_ids)
 
         for topk_ids in all_topks:
@@ -147,7 +177,9 @@ if __name__ == "__main__":
                 "warp_n": wn,
                 "stages": stages
                 }
-    with open("moe_jit.json", "w") as f:
+
+    out_config = args.out_config or f"moe_jit_{E}_{N}_{K}.json"
+    with open(out_config, "w") as f:
         json.dump(conf_to_save, f)
 
 
