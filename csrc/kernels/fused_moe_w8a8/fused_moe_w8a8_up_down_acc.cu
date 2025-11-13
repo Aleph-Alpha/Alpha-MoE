@@ -1050,6 +1050,18 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             arrive(bar + STAGES + smem_stage);
 
             constexpr int PAD = BN2+8;
+            __nv_bfloat16 out_tile[TN2/2][TM][8];
+            for(int tn2 = 0; tn2<TN2; tn2+=2)
+            {
+                for(int tm = 0; tm<TM; tm++)
+                {
+                    for (int t = 0; t<8; t++)
+                    {
+                        int s = t%2;
+                        out_tile[tn2/2][tm][t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*s_w[tn2/2];
+                    }
+                }
+            }
             asm volatile("cp.async.bulk.wait_group 0;");
             cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
             consumer_sync();
@@ -1057,15 +1069,9 @@ __global__ __launch_bounds__(WN*32 + PRODUCER_THREADS) void fused_moe_w8a8_wgmma
             {
                 for(int tm = 0; tm<TM; tm++)
                 {
-                    __nv_bfloat16 tile[8];
-                    for (int t = 0; t<8; t++)
-                    {
-                        int s = t%2;
-                        tile[t] = token_scale[tm][s]*tile_acc[tn2 + t/4][tm][t%4]*s_w[tn2/2];
-                    }
                     int out_row = tm * 8 + lane_id%8;
                     int out_col = (warp_id/4)*TN2*64 + (warp_id%4)*16 + (lane_id&8) + tn2*64 + (lane_id/16)*64;
-                    st_matrix_x4_trans(reinterpret_cast<uint32_t*>(tile),
+                    st_matrix_x4_trans(reinterpret_cast<uint32_t*>(out_tile[tn2/2][tm]),
                             __cvta_generic_to_shared(s_d.out + out_row*PAD + out_col));
                 }
             }
