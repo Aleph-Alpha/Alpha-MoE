@@ -10,11 +10,17 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     moe_sum_reduce_triton,
     moe_sum_reduce_torch_compile,
 )
+from sglang.srt.server_args import set_global_server_args_for_scheduler
 from sgl_kernel import silu_and_mul
 from statistics import mean
 import alpha_kernel
 from alpha_kernel_python.utils import get_best_config
 
+# Sglang fused moe requires this set
+class FakeServerArgs:
+    enable_deterministic_inference=False
+
+set_global_server_args_for_scheduler(FakeServerArgs())
 
 def bench_kineto(fn, kernel_name: str = "moe", num_tests: int = 25):
     schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
