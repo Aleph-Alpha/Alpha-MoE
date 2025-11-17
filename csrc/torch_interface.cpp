@@ -23,6 +23,7 @@ void fused_moe_w8a8_wgmma_up_down_acc(
         int M,
         int K,
         int N,
+        int num_experts,
         int sorted_num,
         int block_m,
         int block_n,
@@ -54,6 +55,26 @@ void fused_moe_w8a8_up_down(
 ) {
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
+
+    TORCH_CHECK(x.size(0));
+    TORCH_CHECK(x.size(1) == w.size(2));
+    TORCH_CHECK(x.size(1) % 128 == 0, "K dimension must be a multiple of 128");
+    TORCH_CHECK((block_n == 64 && warp_n == 4) || (block_n == 32 && warp_n == 8));
+    TORCH_CHECK(stages > 0 && stages < 6);
+    TORCH_CHECK(block_m > 0 && block_m <= 128 && block_m%8 == 0);
+
+    TORCH_CHECK(x.is_contiguous());
+    TORCH_CHECK(w.is_contiguous());
+    TORCH_CHECK(w2.is_contiguous());
+
+    TORCH_CHECK(x_scale.is_contiguous());
+    TORCH_CHECK(w_scale.is_contiguous());
+    TORCH_CHECK(w2_scale.is_contiguous());
+
+    TORCH_CHECK(sorted_token_ids.is_contiguous());
+    TORCH_CHECK(expert_ids.is_contiguous());
+    TORCH_CHECK(topk_weights.is_contiguous());
+
     fused_moe_w8a8_wgmma_up_down_acc(
             static_cast<__nv_fp8_e4m3*>(x.data_ptr()),
             static_cast<float*>(x_scale.data_ptr()),
@@ -70,6 +91,7 @@ void fused_moe_w8a8_up_down(
             x.size(0),
             x.size(1),
             w.size(1),
+            w.size(0),
             sorted_token_ids.size(0),
             static_cast<int>(block_m),
             static_cast<int>(block_n),
@@ -79,7 +101,6 @@ void fused_moe_w8a8_up_down(
             stream
     );
 }
-
 // Register the custom operator
 TORCH_LIBRARY_FRAGMENT(alpha_kernel, m) {
     m.def("fused_moe_w8a8_up_down("

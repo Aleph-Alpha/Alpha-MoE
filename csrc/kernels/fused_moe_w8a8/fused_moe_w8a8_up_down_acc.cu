@@ -1112,6 +1112,7 @@ void launch_fused_moe_kernel_up_down_acc(
         int M,
         int K,
         int N,
+        int num_experts,
         int sorted_num,
         int block_m,
         float scaling_factor,
@@ -1134,7 +1135,7 @@ void launch_fused_moe_kernel_up_down_acc(
     CUtensorMap tensor_map_w{};
     {
         constexpr uint32_t rank = 2;
-        uint64_t size[rank] = {static_cast<uint64_t>(K), static_cast<uint64_t>(N*257)};
+        uint64_t size[rank] = {static_cast<uint64_t>(K), static_cast<uint64_t>(N*num_experts)};
         uint64_t stride[rank] = {static_cast<uint64_t>(K) * sizeof(fp8)};
         uint32_t box_size[rank] = {BK, BN*WN};
         uint32_t elem_stride[rank] = {1, 1};
@@ -1158,7 +1159,7 @@ void launch_fused_moe_kernel_up_down_acc(
     CUtensorMap tensor_map_w2{};
     {
         constexpr uint32_t rank = 2;
-        uint64_t size[rank] = {static_cast<uint64_t>(K2), static_cast<uint64_t>(N2*257)};
+        uint64_t size[rank] = {static_cast<uint64_t>(K2), static_cast<uint64_t>(N2*num_experts)};
         uint64_t stride[rank] = {static_cast<uint64_t>(K2) * sizeof(fp8)};
         uint32_t box_size[rank] = {BK2, BN2};
         uint32_t elem_stride[rank] = {1, 1};
@@ -1209,16 +1210,17 @@ void dispatch_stages(
         const float* topk_weights,
         const int top_k,
         int M, int K, int N,
+        int num_experts,
         int sorted_num, int block_m,
         float scaling_factor,
         cudaStream_t stream)
 {
     switch(stages) {
-        case 1: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 1>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 2: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 2>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 3: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 3>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 4: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 4>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 5: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 5>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
+        case 1: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 1>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 2: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 2>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 3: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 3>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 4: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 4>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 5: launch_fused_moe_kernel_up_down_acc<BM, BN, WN, 5>(x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
         default:
             fprintf(stderr, "Unsupported stages value: %d. Supported values are: 1, 2, 3, 4\n", stages);
     }
@@ -1237,15 +1239,16 @@ void dispatch_bn_wn(
         const float* topk_weights,
         const int top_k,
         int M, int K, int N,
+        int num_experts,
         int sorted_num, int block_m,
         float scaling_factor,
         cudaStream_t stream)
 {
     if (bn == 32 && wn == 8) {
-        dispatch_stages<BM, 32, 8>(stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream);
+        dispatch_stages<BM, 32, 8>(stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream);
     }
     else if (bn == 64 && wn == 4) {
-        dispatch_stages<BM, 64, 4>(stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream);
+        dispatch_stages<BM, 64, 4>(stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream);
     }
     else {
         fprintf(stderr, "Unsupported BN/WN pair: (%d, %d). Supported pairs are: (32, 8) and (64, 4)\n", bn, wn);
@@ -1266,6 +1269,7 @@ void fused_moe_w8a8_wgmma_up_down_acc(
         int M,
         int K,
         int N,
+        int num_experts,
         int sorted_num,
         int block_m,
         int block_n,
@@ -1276,22 +1280,22 @@ void fused_moe_w8a8_wgmma_up_down_acc(
         )
 {
     switch(block_m) {
-        case 8:   dispatch_bn_wn<8>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 16:  dispatch_bn_wn<16>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 24:  dispatch_bn_wn<24>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 32:  dispatch_bn_wn<32>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 40:  dispatch_bn_wn<40>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 48:  dispatch_bn_wn<48>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 56:  dispatch_bn_wn<56>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 64:  dispatch_bn_wn<64>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 72:  dispatch_bn_wn<72>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 80:  dispatch_bn_wn<80>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 88:  dispatch_bn_wn<88>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 96:  dispatch_bn_wn<96>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 104: dispatch_bn_wn<104>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 112: dispatch_bn_wn<112>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 120: dispatch_bn_wn<120>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
-        case 128: dispatch_bn_wn<128>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, sorted_num, block_m, scaling_factor, stream); break;
+        case 8:   dispatch_bn_wn<8>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 16:  dispatch_bn_wn<16>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 24:  dispatch_bn_wn<24>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 32:  dispatch_bn_wn<32>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 40:  dispatch_bn_wn<40>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 48:  dispatch_bn_wn<48>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 56:  dispatch_bn_wn<56>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 64:  dispatch_bn_wn<64>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 72:  dispatch_bn_wn<72>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 80:  dispatch_bn_wn<80>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 88:  dispatch_bn_wn<88>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 96:  dispatch_bn_wn<96>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 104: dispatch_bn_wn<104>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 112: dispatch_bn_wn<112>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 120: dispatch_bn_wn<120>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
+        case 128: dispatch_bn_wn<128>(block_n, warp_n, stages, x, x_scale, w, w_scale, w2, w2_scale, out, sorted_token_ids, expert_ids, num_tokens_post_padded, topk_weights, top_k, M, K, N, num_experts, sorted_num, block_m, scaling_factor, stream); break;
         default:
                   fprintf(stderr, "Unsupported block_m value: %d. Supported values are: 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128\n", block_m);
                   break;
