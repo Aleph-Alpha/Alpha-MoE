@@ -5,18 +5,18 @@ index b92f2159e..6cab7992f 100644
 @@ -30,6 +30,12 @@ from .fused_moe_triton_kernels import (
  )
  from .moe_align_block_size import moe_align_block_size
- 
-+import alpha_kernel
-+from alpha_kernel_python.utils import get_best_config
+
++import alpha_moe
++from alpha_moe_python.utils import get_best_config
 +from sglang.srt.layers.quantization.fp8_kernel import (
 +        sglang_per_token_group_quant_fp8,
 +        )
 +
  if TYPE_CHECKING:
      from sglang.srt.layers.moe.topk import StandardTopKOutput
- 
+
 @@ -405,6 +411,26 @@ def fused_experts_impl(
- 
+
      num_tokens, _ = hidden_states.shape
      E, N, _ = w1.shape
 +    M = num_tokens
@@ -35,7 +35,7 @@ index b92f2159e..6cab7992f 100644
 +            )
 +    routed_scaling_factor = routed_scaling_factor or 1.0
 +
-+    torch.ops.alpha_kernel.fused_moe_w8a8_up_down(A, A_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
++    torch.ops.alpha_moe.fused_moe_w8a8_up_down(A, A_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
 +                                                     expert_ids, num_tokens_post_padded, topk_weights, hidden_states,
 +                                                     topk, block_m, bn, wn, stages, routed_scaling_factor)
 +    return hidden_states
@@ -49,20 +49,20 @@ index bc0e1061e..0a2d94952 100644
 @@ -55,6 +55,9 @@ from sglang.srt.utils import (
      round_up,
  )
- 
-+from alpha_kernel_python.utils import interleave_tensor
+
++from alpha_moe_python.utils import interleave_tensor
 +
 +
  if is_flashinfer_available():
      from flashinfer import RoutingMethodType, fp4_quantize
- 
+
 @@ -236,6 +239,8 @@ class FusedMoE(torch.nn.Module):
              isinstance(self.quant_method, Fp8MoEMethod)
              and get_moe_runner_backend().is_cutlass()
          )
 +        self.w13_chunks_loaded = [0] * num_experts
 +        self.w13_scale_chunks_loaded = [0] * num_experts
- 
+
      def _load_per_tensor_weight_scale(
          self,
 @@ -715,6 +720,15 @@ class FusedMoE(torch.nn.Module):
@@ -94,5 +94,5 @@ index bc0e1061e..0a2d94952 100644
 +                _interleaved = interleave_tensor(expert_data.view((1,) + expert_data.shape))[0]
 +                expert_data.copy_(_interleaved)
              return
- 
+
      def weight_loader_fused(

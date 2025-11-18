@@ -16,12 +16,12 @@ if __name__ == '__main__':
                ]
 
     setuptools.setup(
-        name='alpha_kernel_python',
-        packages=setuptools.find_packages(include=["alpha_kernel_python"]),
+        name='alpha_moe_python',
+        packages=setuptools.find_packages(include=["alpha_moe_python"]),
         version='0.0.1',
         ext_modules=[
             CUDAExtension(
-                name='alpha_kernel',
+                name='alpha_moe',
                 sources=sources,
             )
         ],

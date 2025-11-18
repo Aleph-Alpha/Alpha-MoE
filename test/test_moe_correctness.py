@@ -9,7 +9,15 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
         moe_sum_reduce_torch_compile,
         )
 from sgl_kernel import silu_and_mul
-import alpha_kernel
+import alpha_moe
+
+from sglang.srt.server_args import set_global_server_args_for_scheduler
+
+# Sglang fused moe requires this set
+class FakeServerArgs:
+    enable_deterministic_inference=False
+
+set_global_server_args_for_scheduler(FakeServerArgs())
 
 def interleave_tensor(tensor, rep=8):
     M, N, K = tensor.shape
@@ -86,7 +94,7 @@ def test_configuration(num_tokens, E, N, K, top_k, block_m, bn, wn, stages,
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_m, E)
     out = torch.zeros_like(x)
 
-    torch.ops.alpha_kernel.fused_moe_w8a8_up_down(
+    torch.ops.alpha_moe.fused_moe_w8a8_up_down(
         x_q, x_scale, w1_swiglu, w1_scale_swiglu, w2, w2_scale,
         sorted_token_ids, expert_ids, num_tokens_post_padded,
         topk_weights, out, top_k,

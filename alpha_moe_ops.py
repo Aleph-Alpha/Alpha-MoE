@@ -1,8 +1,8 @@
 import torch
-import alpha_kernel
+import alpha_moe
 
 
-@torch.library.register_fake("alpha_kernel::fused_moe_w8a8_up_down")
+@torch.library.register_fake("alpha_moe::fused_moe_w8a8_up_down")
 def fused_moe_w8a8_up_down_abstract(
     x: torch.Tensor,
     x_scale: torch.Tensor,
@@ -67,7 +67,7 @@ def fused_moe_w8a8_up_down(
     Returns:
         Output tensor (same as `out` parameter) - modified in-place
     """
-    return torch.ops.alpha_kernel.fused_moe_w8a8_up_down(
+    return torch.ops.alpha_moe.fused_moe_w8a8_up_down(
         x,
         x_scale,
         w,

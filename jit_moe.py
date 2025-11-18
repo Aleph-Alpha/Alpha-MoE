@@ -8,7 +8,7 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
         moe_align_block_size,
         )
 from statistics import mean
-import alpha_kernel
+import alpha_moe
 
 
 # Adapted from: https://github.com/deepseek-ai/DeepEP/blob/main/deep_ep/utils.py
@@ -158,11 +158,11 @@ if __name__ == "__main__":
                         sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_m, E)
                         configuration = f"{block_m=} {bn=}, {wn=}, {stages=}"
                         out = torch.zeros_like(x)
-                        torch.ops.alpha_kernel.fused_moe_w8a8_up_down(x_q, x_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
+                        torch.ops.alpha_moe.fused_moe_w8a8_up_down(x_q, x_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
                                                                       expert_ids, num_tokens_post_padded, topk_weights, out, top_k,
                                                                       block_m, bn, wn, stages, 2.5)
 
-                        new_time = bench_fn(lambda: torch.ops.alpha_kernel.fused_moe_w8a8_up_down(x_q, x_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
+                        new_time = bench_fn(lambda: torch.ops.alpha_moe.fused_moe_w8a8_up_down(x_q, x_scale, w1, w1_scale, w2, w2_scale, sorted_token_ids,
                                                                                                   expert_ids, num_tokens_post_padded, topk_weights, out, top_k,
                                                                                                   block_m, bn, wn, stages, 2.5))
                         times[num_tokens][(block_m, bn, wn, stages)].append(new_time)

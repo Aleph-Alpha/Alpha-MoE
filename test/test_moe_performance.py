@@ -13,8 +13,8 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
 from sglang.srt.server_args import set_global_server_args_for_scheduler
 from sgl_kernel import silu_and_mul
 from statistics import mean
-import alpha_kernel
-from alpha_kernel_python.utils import get_best_config
+import alpha_moe
+from alpha_moe_python.utils import get_best_config
 
 # Sglang fused moe requires this set
 class FakeServerArgs:
@@ -219,7 +219,7 @@ if __name__ == "__main__":
             triton_time = triton_time_merge + triton_time_down + triton_time_up + triton_time_swiglu + triton_time_quant
 
             out = torch.zeros_like(x)
-            torch.ops.alpha_kernel.fused_moe_w8a8_up_down(
+            torch.ops.alpha_moe.fused_moe_w8a8_up_down(
                 x_q, x_scale, w1, w1_scale, w2, w2_scale,
                 sorted_token_ids, expert_ids, num_tokens_post_padded,
                 topk_weights, out, top_k,
@@ -227,7 +227,7 @@ if __name__ == "__main__":
             )
 
             alpha_time = bench_kineto(
-                lambda: torch.ops.alpha_kernel.fused_moe_w8a8_up_down(
+                lambda: torch.ops.alpha_moe.fused_moe_w8a8_up_down(
                     x_q, x_scale, w1, w1_scale, w2, w2_scale,
                     sorted_token_ids, expert_ids, num_tokens_post_padded,
                     topk_weights, out, top_k,

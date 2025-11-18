@@ -102,7 +102,7 @@ void fused_moe_w8a8_up_down(
     );
 }
 // Register the custom operator
-TORCH_LIBRARY_FRAGMENT(alpha_kernel, m) {
+TORCH_LIBRARY_FRAGMENT(alpha_moe, m) {
     m.def("fused_moe_w8a8_up_down("
             "Tensor x, "
             "Tensor x_scale, "
@@ -126,6 +126,6 @@ TORCH_LIBRARY_FRAGMENT(alpha_kernel, m) {
     m.impl("fused_moe_w8a8_up_down", torch::kCUDA, &fused_moe_w8a8_up_down);
 }
 
-PYBIND11_MODULE(alpha_kernel, m) {
+PYBIND11_MODULE(alpha_moe, m) {
   // Empty module - operators are registered via TORCH_LIBRARY
 }
