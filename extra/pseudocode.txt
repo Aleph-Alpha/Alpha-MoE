@@ -1,0 +1,32 @@
+# For talks
+
+#PRODUCER
+for stage in range(stages_up):
+    producer_wait(stage)
+    load_block_x(stage)
+    load_block_w_up(stage)
+    producer_arrive(stage)
+
+for stage in range(stages_down):
+    producer_wait(stage)
+    load_block_w_down(stage)
+    producer_arrive(stage)
+
+
+# CONSUMER
+
+acc = {0.f}
+for stage in range(stages_up):
+    consumer_wait(stage)
+    acc = mma(block_x, block_w_up, acc)
+    consumer_arrive(stage)
+
+out_swiglu = swiglu(acc)
+block_x = quantize(out_swiglu)
+
+for stage in range(stages_down):
+    consumer_wait(stage)
+    acc = {0.f}
+    acc = mma(block_x, block_w_down, acc)
+    reduce_async_sum(acc, out_ptr)
+    consumer_arrive(stage)
